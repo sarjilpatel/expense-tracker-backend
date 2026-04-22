@@ -8,13 +8,14 @@ const connectDB = require("./config/db");
 const authRoutes = require("./routes/authRoutes");
 const groupRoutes = require("./routes/groupRoutes");
 const transactionRoutes = require("./routes/transactionRoutes");
+const budgetRoutes = require("./routes/budgetRoutes");
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: {
         origin: "*",
-        methods: ["GET", "POST"]
+        methods: ["GET", "POST", "PUT", "DELETE"]
     }
 });
 
@@ -29,6 +30,7 @@ connectDB();
 app.use("/api/auth", authRoutes);
 app.use("/api/group", groupRoutes);
 app.use("/api/transactions", transactionRoutes);
+app.use("/api/budgets", budgetRoutes);
 
 io.on("connection", (socket) => {
     console.log("Socket connected:", socket.id);

@@ -55,3 +55,36 @@ exports.login = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 };
+
+exports.getMe = async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id).select("-password").populate("groupId");
+        res.json(user);
+    } catch (error) {
+        res.status(500).json({ message: "Server Error" });
+    }
+};
+
+exports.updateProfile = async (req, res) => {
+    try {
+        const { name } = req.body;
+        const userId = req.user.id;
+        const updatedFields = {};
+        
+        if (name) updatedFields.name = name;
+        if (req.file) {
+            updatedFields.profilePhoto = req.file.location; // S3 URL from multer-s3
+        }
+
+        const user = await User.findByIdAndUpdate(
+            userId,
+            { $set: updatedFields },
+            { new: true }
+        ).select("-password");
+
+        res.json(user);
+    } catch (error) {
+        console.error("Update Profile Error:", error);
+        res.status(500).json({ message: "Failed to update profile" });
+    }
+};

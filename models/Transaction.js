@@ -12,7 +12,6 @@ const transactionSchema = new mongoose.Schema({
   },
   category: {
     type: String,
-    enum: ["Food", "Travel", "Shopping", "Bills", "Health", "Other"],
     required: [true, "Category is required"],
   },
   note: {
@@ -28,6 +27,10 @@ const transactionSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: "Group",
     required: [true, "Group ID is required"],
+  },
+  date: {
+    type: Date,
+    default: Date.now,
   },
   createdAt: {
     type: Date,
