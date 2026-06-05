@@ -5,6 +5,7 @@ const {
   addTransaction,
   getTransactions,
   getAnalytics,
+  getTrend,
   updateTransaction,
   deleteTransaction,
 } = require("../controllers/transactionController");
@@ -23,6 +24,11 @@ router.get("/", auth, getTransactions);
 // @desc    Get transaction analytics (summary + category breakdown)
 // @access  Private
 router.get("/analytics", auth, getAnalytics);
+
+// @route   GET /api/transactions/analytics/trend
+// @desc    Get monthly income/expense trend for the last N months
+// @access  Private
+router.get("/analytics/trend", auth, getTrend);
 
 // @route   PUT /api/transactions/:id
 // @desc    Update a transaction

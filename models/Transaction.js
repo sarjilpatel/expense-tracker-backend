@@ -36,6 +36,21 @@ const transactionSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+  isRecurring: {
+    type: Boolean,
+    default: false,
+  },
+  recurrenceFrequency: {
+    type: String,
+    enum: ['daily', 'weekly', 'monthly', null],
+    default: null,
+  },
+  nextDueDate: {
+    type: Date,
+    default: null,
+  },
 });
+
+transactionSchema.index({ note: 'text', category: 'text' });
 
 module.exports = mongoose.model("Transaction", transactionSchema);

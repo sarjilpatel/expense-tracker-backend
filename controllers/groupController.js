@@ -2,12 +2,47 @@ const Group = require("../models/Group");
 const User = require("../models/User");
 const crypto = require("crypto");
 
+async function syncUserGroupId(userId) {
+    const user = await User.findById(userId);
+    if (!user) return;
+
+    if (user.groupId) {
+        const stillMember = await Group.findOne({ _id: user.groupId, members: userId });
+        if (!stillMember) {
+            // Current groupId group no longer lists this user as member — find another
+            const anotherGroup = await Group.findOne({ members: userId });
+            await User.findByIdAndUpdate(userId, { groupId: anotherGroup ? anotherGroup._id : null });
+        }
+    } else {
+        // No active group but might be a member of one
+        const anyGroup = await Group.findOne({ members: userId });
+        if (anyGroup) {
+            await User.findByIdAndUpdate(userId, { groupId: anyGroup._id });
+        }
+    }
+}
+
+async function generateUniqueJoinCode() {
+    for (let attempt = 0; attempt < 5; attempt++) {
+        const code = crypto.randomBytes(3).toString("hex").toUpperCase();
+        const existing = await Group.findOne({ joinCode: code });
+        if (!existing) return code;
+    }
+    throw new Error("Failed to generate unique join code after 5 attempts");
+}
+
 exports.createGroup = async (req, res) => {
     try {
-        const { groupName } = req.body;
+        const rawName = req.body.groupName;
+        if (!rawName || typeof rawName !== 'string') {
+            return res.status(400).json({ message: "Group name is required" });
+        }
+        const groupName = rawName.trim().slice(0, 50);
+        if (!groupName) return res.status(400).json({ message: "Group name cannot be empty" });
+
         const userId = req.user.id;
 
-        const joinCode = crypto.randomBytes(3).toString("hex").toUpperCase();
+        const joinCode = await generateUniqueJoinCode();
 
         const group = await Group.create({
             name: groupName,
@@ -65,7 +100,7 @@ exports.getGroupDetails = async (req, res) => {
         
         // Auto-fix for legacy groups missing joinCode
         if (!group.joinCode) {
-            group.joinCode = crypto.randomBytes(3).toString("hex").toUpperCase();
+            group.joinCode = await generateUniqueJoinCode();
             await group.save();
         }
 
@@ -83,7 +118,7 @@ exports.getUserGroups = async (req, res) => {
         // Ensure all returned groups have joinCode
         const fixedGroups = await Promise.all(groups.map(async (g) => {
             if (!g.joinCode) {
-                g.joinCode = crypto.randomBytes(3).toString("hex").toUpperCase();
+                g.joinCode = await generateUniqueJoinCode();
                 await g.save();
             }
             return g;
@@ -107,6 +142,7 @@ exports.switchActiveGroup = async (req, res) => {
         if (!group) return res.status(403).json({ message: "Access denied to this group" });
 
         await User.findByIdAndUpdate(userId, { groupId });
+        await syncUserGroupId(userId);
         res.json({ message: "Switched successfully", groupId });
     } catch (error) {
         res.status(500).json({ message: "Failed to switch group" });
@@ -115,10 +151,17 @@ exports.switchActiveGroup = async (req, res) => {
 
 exports.addCategory = async (req, res) => {
   try {
-    const { name, icon, type } = req.body;
+    const { icon, type } = req.body;
+    const rawName = req.body.name;
+    if (!rawName || typeof rawName !== 'string') {
+        return res.status(400).json({ message: "Category name is required" });
+    }
+    const name = rawName.trim().slice(0, 30);
+    if (!name) return res.status(400).json({ message: "Category name cannot be empty" });
+
     const userId = req.user.id;
     const user = await User.findById(userId);
-    
+
     if (!user.groupId) return res.status(400).json({ message: "User not in group" });
 
     const group = await Group.findById(user.groupId);
