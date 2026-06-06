@@ -74,9 +74,15 @@ exports.getTransactions = async (req, res) => {
 
     let query = { groupId: user.groupId };
 
-    if (month && year) {
-      const startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
-      const endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59);
+    if (year) {
+      let startDate, endDate;
+      if (month) {
+        startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
+        endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59);
+      } else {
+        startDate = new Date(parseInt(year), 0, 1);
+        endDate = new Date(parseInt(year), 11, 31, 23, 59, 59);
+      }
       query.date = { $gte: startDate, $lte: endDate };
     }
 
@@ -116,9 +122,15 @@ exports.getAnalytics = async (req, res) => {
     const m = parseInt(month);
     const y = parseInt(year);
 
-    if (m && y) {
-      const startDate = new Date(y, m - 1, 1);
-      const endDate = new Date(y, m, 0, 23, 59, 59);
+    if (y) {
+      let startDate, endDate;
+      if (m) {
+        startDate = new Date(y, m - 1, 1);
+        endDate = new Date(y, m, 0, 23, 59, 59);
+      } else {
+        startDate = new Date(y, 0, 1);
+        endDate = new Date(y, 11, 31, 23, 59, 59);
+      }
       match.date = { $gte: startDate, $lte: endDate };
     }
 
