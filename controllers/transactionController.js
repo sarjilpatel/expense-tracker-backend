@@ -7,7 +7,7 @@ const Group = require("../models/Group");
 // @access  Private
 exports.addTransaction = async (req, res) => {
   try {
-    const { amount, type, category, date, isRecurring, recurrenceFrequency } = req.body;
+    const { amount, type, category, date, isRecurring, recurrenceFrequency, currency } = req.body;
     const note = req.body.note ? String(req.body.note).trim().slice(0, 200) : undefined;
     const userId = req.user.id;
 
@@ -42,6 +42,7 @@ exports.addTransaction = async (req, res) => {
       userId,
       groupId: user.groupId,
       date: date || Date.now(),
+      currency: currency || 'INR',
       isRecurring: !!isRecurring,
       recurrenceFrequency: isRecurring ? recurrenceFrequency : null,
       nextDueDate,
@@ -321,7 +322,7 @@ exports.getTrend = async (req, res) => {
 // @access  Private
 exports.updateTransaction = async (req, res) => {
   try {
-    const { amount, type, category, date } = req.body;
+    const { amount, type, category, date, currency } = req.body;
     const note = req.body.note !== undefined ? String(req.body.note).trim().slice(0, 200) : undefined;
     const userId = req.user.id;
 
@@ -349,6 +350,7 @@ exports.updateTransaction = async (req, res) => {
     if (category) updatedFields.category = category;
     if (note !== undefined) updatedFields.note = note;
     if (date) updatedFields.date = date;
+    if (currency) updatedFields.currency = currency;
 
     transaction = await Transaction.findByIdAndUpdate(
       req.params.id,

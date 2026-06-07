@@ -36,6 +36,11 @@ const transactionSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+  currency: {
+    type: String,
+    enum: ['INR', 'USD', 'EUR', 'GBP', 'AED', 'JPY', 'CAD', 'AUD'],
+    default: 'INR',
+  },
   isRecurring: {
     type: Boolean,
     default: false,
