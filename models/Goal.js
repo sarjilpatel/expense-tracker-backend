@@ -1,15 +1,15 @@
 const mongoose = require('mongoose');
 
 const goalSchema = new mongoose.Schema({
-  groupId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Group',
-    required: true,
-  },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
+  },
+  groupId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Group',
+    default: null,
   },
   name: {
     type: String,

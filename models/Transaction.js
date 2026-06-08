@@ -26,7 +26,7 @@ const transactionSchema = new mongoose.Schema({
   groupId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Group",
-    required: [true, "Group ID is required"],
+    default: null,
   },
   date: {
     type: Date,

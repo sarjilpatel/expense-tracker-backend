@@ -47,6 +47,7 @@ app.use(cors({
     credentials: true,
 }));
 app.use(express.json());
+app.set('trust proxy', 1);
 
 // Global rate limiter — 60 requests/minute per IP across all /api routes
 const apiLimiter = rateLimit({

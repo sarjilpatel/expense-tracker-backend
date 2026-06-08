@@ -8,7 +8,6 @@ const Transaction = require("../models/Transaction");
 const Goal        = require("../models/Goal");
 const Split       = require("../models/Split");
 const Budget      = require("../models/Budget");
-const Group       = require("../models/Group");
 const { s3Client }                          = require("../middleware/uploadMiddleware");
 const { sendPasswordResetEmail, sendVerificationEmail } = require("../utils/mailer");
 

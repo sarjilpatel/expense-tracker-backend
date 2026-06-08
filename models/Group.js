@@ -7,13 +7,27 @@ const categorySchema = new mongoose.Schema({
   isActive: { type: Boolean, default: true }
 });
 
+const pendingMemberSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  requestedAt: { type: Date, default: Date.now },
+});
+
 const groupSchema = new mongoose.Schema({
   name: String,
   joinCode: String,
+  owner: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+  },
   members: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: "User"
   }],
+  pendingMembers: {
+    type: [pendingMemberSchema],
+    default: [],
+  },
   categories: {
     type: [categorySchema],
     default: [

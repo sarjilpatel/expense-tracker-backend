@@ -3,9 +3,16 @@ const User = require('../models/User');
 
 exports.getGoals = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
-    if (!user?.groupId) return res.status(400).json({ msg: 'User not in a group' });
-    const goals = await Goal.find({ groupId: user.groupId }).sort({ createdAt: -1 });
+    const userId = req.user.id;
+    const user = await User.findById(userId);
+    if (!user) return res.status(401).json({ msg: 'Unauthorized' });
+
+    // Personal goals + group goals if user is in a group
+    const query = user.groupId
+      ? { $or: [{ userId }, { groupId: user.groupId }] }
+      : { userId };
+
+    const goals = await Goal.find(query).sort({ createdAt: -1 });
     res.json(goals);
   } catch (err) {
     console.error(err);
@@ -16,16 +23,17 @@ exports.getGoals = async (req, res) => {
 exports.createGoal = async (req, res) => {
   try {
     const { name, targetAmount, savedAmount, deadline, icon, color } = req.body;
-    const user = await User.findById(req.user.id);
-    if (!user?.groupId) return res.status(400).json({ msg: 'User not in a group' });
+    const userId = req.user.id;
+    const user = await User.findById(userId);
+    if (!user) return res.status(401).json({ msg: 'Unauthorized' });
 
     if (!name || !targetAmount || Number(targetAmount) < 1) {
       return res.status(400).json({ msg: 'Name and a positive target amount are required' });
     }
 
     const goal = await Goal.create({
-      groupId:      user.groupId,
-      userId:       req.user.id,
+      userId,
+      groupId:      user.groupId || null,
       name:         String(name).trim().slice(0, 60),
       targetAmount: Number(targetAmount),
       savedAmount:  Math.max(0, Number(savedAmount) || 0),
@@ -34,8 +42,10 @@ exports.createGoal = async (req, res) => {
       color:        color || '#6366F1',
     });
 
-    const io = req.app.get('io');
-    if (io) io.to(user.groupId.toString()).emit('goal_created', { _id: goal._id, groupId: goal.groupId });
+    if (user.groupId) {
+      const io = req.app.get('io');
+      if (io) io.to(user.groupId.toString()).emit('goal_created', { _id: goal._id, groupId: goal.groupId });
+    }
 
     res.status(201).json(goal);
   } catch (err) {
@@ -46,16 +56,21 @@ exports.createGoal = async (req, res) => {
 
 exports.updateGoal = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
-    if (!user?.groupId) return res.status(400).json({ msg: 'User not in a group' });
+    const userId = req.user.id;
+    const user = await User.findById(userId);
+    if (!user) return res.status(401).json({ msg: 'Unauthorized' });
 
-    const goal = await Goal.findOne({ _id: req.params.id, groupId: user.groupId });
+    // User can update their own goals or group goals if in the same group
+    const query = user.groupId
+      ? { _id: req.params.id, $or: [{ userId }, { groupId: user.groupId }] }
+      : { _id: req.params.id, userId };
+
+    const goal = await Goal.findOne(query);
     if (!goal) return res.status(404).json({ msg: 'Goal not found' });
 
     const { name, targetAmount, savedAmount, deadline, icon, color, addAmount } = req.body;
 
     if (addAmount !== undefined) {
-      // Quick "add funds" path
       goal.savedAmount = Math.max(0, goal.savedAmount + Number(addAmount));
     } else {
       if (name !== undefined)         goal.name         = String(name).trim().slice(0, 60);
@@ -68,8 +83,10 @@ exports.updateGoal = async (req, res) => {
 
     await goal.save();
 
-    const io = req.app.get('io');
-    if (io) io.to(user.groupId.toString()).emit('goal_updated', { _id: goal._id, groupId: goal.groupId });
+    if (user.groupId && goal.groupId?.toString() === user.groupId.toString()) {
+      const io = req.app.get('io');
+      if (io) io.to(user.groupId.toString()).emit('goal_updated', { _id: goal._id, groupId: goal.groupId });
+    }
 
     res.json(goal);
   } catch (err) {
@@ -80,14 +97,21 @@ exports.updateGoal = async (req, res) => {
 
 exports.deleteGoal = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
-    if (!user?.groupId) return res.status(400).json({ msg: 'User not in a group' });
+    const userId = req.user.id;
+    const user = await User.findById(userId);
+    if (!user) return res.status(401).json({ msg: 'Unauthorized' });
 
-    const goal = await Goal.findOneAndDelete({ _id: req.params.id, groupId: user.groupId });
+    const query = user.groupId
+      ? { _id: req.params.id, $or: [{ userId }, { groupId: user.groupId }] }
+      : { _id: req.params.id, userId };
+
+    const goal = await Goal.findOneAndDelete(query);
     if (!goal) return res.status(404).json({ msg: 'Goal not found' });
 
-    const io = req.app.get('io');
-    if (io) io.to(user.groupId.toString()).emit('goal_deleted', req.params.id);
+    if (user.groupId && goal.groupId?.toString() === user.groupId.toString()) {
+      const io = req.app.get('io');
+      if (io) io.to(user.groupId.toString()).emit('goal_deleted', req.params.id);
+    }
 
     res.json({ msg: 'Goal deleted' });
   } catch (err) {

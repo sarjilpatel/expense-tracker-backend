@@ -2,6 +2,20 @@ const Transaction = require("../models/Transaction");
 const User = require("../models/User");
 const Group = require("../models/Group");
 
+// Returns a Mongoose query filter scoped to what the user can see.
+// Group members see all group transactions (excluding others' private ones).
+// Solo users see only their own transactions.
+function buildScope(user) {
+  if (user.groupId) {
+    return {
+      groupId: user.groupId,
+      deletedAt: null,
+      $or: [{ isPrivate: { $ne: true } }, { userId: user._id }],
+    };
+  }
+  return { userId: user._id, deletedAt: null };
+}
+
 // @desc    Add a new transaction
 // @route   POST /api/transactions
 // @access  Private
@@ -11,31 +25,30 @@ exports.addTransaction = async (req, res) => {
     const note = req.body.note ? String(req.body.note).trim().slice(0, 200) : undefined;
     const userId = req.user.id;
 
-    // Ensure user exists and get groupId
     if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
       return res.status(400).json({ msg: "Amount must be greater than 0" });
     }
 
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ msg: "User not found" });
-    if (!user.groupId) return res.status(400).json({ msg: "User not in group" });
 
-    // Validate category against group categories
-    const group = await Group.findById(user.groupId);
-    const isValidCategory = group.categories.some(c => c.name === category);
-    
-    if (!isValidCategory) {
-      return res.status(400).json({
-        msg: `Invalid category. Please use a group-defined category.`,
-      });
+    // Category validation only applies when the user is in a group (group defines categories)
+    if (user.groupId) {
+      const group = await Group.findById(user.groupId);
+      if (group) {
+        const isValidCategory = group.categories.some(c => c.name === category);
+        if (!isValidCategory) {
+          return res.status(400).json({ msg: "Invalid category. Please use a group-defined category." });
+        }
+      }
     }
 
     let nextDueDate = null;
     if (isRecurring && recurrenceFrequency) {
-        const base = date ? new Date(date) : new Date();
-        if (recurrenceFrequency === 'daily') nextDueDate = new Date(base.setDate(base.getDate() + 1));
-        else if (recurrenceFrequency === 'weekly') nextDueDate = new Date(base.setDate(base.getDate() + 7));
-        else if (recurrenceFrequency === 'monthly') nextDueDate = new Date(base.setMonth(base.getMonth() + 1));
+      const base = date ? new Date(date) : new Date();
+      if (recurrenceFrequency === 'daily')   nextDueDate = new Date(base.setDate(base.getDate() + 1));
+      else if (recurrenceFrequency === 'weekly')  nextDueDate = new Date(base.setDate(base.getDate() + 7));
+      else if (recurrenceFrequency === 'monthly') nextDueDate = new Date(base.setMonth(base.getMonth() + 1));
     }
 
     const transaction = await Transaction.create({
@@ -44,7 +57,7 @@ exports.addTransaction = async (req, res) => {
       category,
       note,
       userId,
-      groupId: user.groupId,
+      groupId: user.groupId || null,
       date: date || Date.now(),
       currency: currency || 'INR',
       isRecurring: !!isRecurring,
@@ -53,12 +66,13 @@ exports.addTransaction = async (req, res) => {
       isPrivate: !!isPrivate,
     });
 
-    // Broadcast a stripped payload — note field excluded to minimise data in transit
-    const io = req.app.get("io");
-    if (io) {
-      const populatedTx = await Transaction.findById(transaction._id).populate("userId", "name profilePhoto");
-      const { note: _omit, isRecurring, recurrenceFrequency, nextDueDate, ...socketPayload } = populatedTx.toObject();
-      io.to(user.groupId.toString()).emit("new_transaction", socketPayload);
+    if (user.groupId) {
+      const io = req.app.get("io");
+      if (io) {
+        const populatedTx = await Transaction.findById(transaction._id).populate("userId", "name profilePhoto");
+        const { note: _omit, isRecurring, recurrenceFrequency, nextDueDate, ...socketPayload } = populatedTx.toObject();
+        io.to(user.groupId.toString()).emit("new_transaction", socketPayload);
+      }
     }
 
     res.status(201).json(transaction);
@@ -68,7 +82,7 @@ exports.addTransaction = async (req, res) => {
   }
 };
 
-// @desc    Get all transactions for the current user's group
+// @desc    Get transactions (group-scoped or personal)
 // @route   GET /api/transactions
 // @access  Private
 exports.getTransactions = async (req, res) => {
@@ -77,29 +91,25 @@ exports.getTransactions = async (req, res) => {
     const { month, year, search, page, limit: limitParam } = req.query;
 
     const user = await User.findById(userId);
-    if (!user || !user.groupId) return res.status(400).json({ msg: "Unauthorized" });
+    if (!user) return res.status(401).json({ msg: "Unauthorized" });
 
-    // Exclude private transactions that belong to other group members; exclude soft-deleted
-    let query = {
-      groupId: user.groupId,
-      deletedAt: null,
-      $or: [{ isPrivate: { $ne: true } }, { userId: user._id }],
-    };
+    const query = buildScope(user);
 
     if (year) {
       let startDate, endDate;
       if (month) {
         startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
-        endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59);
+        endDate   = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59);
       } else {
         startDate = new Date(parseInt(year), 0, 1);
-        endDate = new Date(parseInt(year), 11, 31, 23, 59, 59);
+        endDate   = new Date(parseInt(year), 11, 31, 23, 59, 59);
       }
       query.date = { $gte: startDate, $lte: endDate };
     }
 
     if (search && search.trim()) {
       const term = search.trim();
+      // Override the $or from buildScope when searching by text
       query.$or = [
         { note: { $regex: term, $options: 'i' } },
         { category: { $regex: term, $options: 'i' } },
@@ -134,15 +144,9 @@ exports.getAnalytics = async (req, res) => {
     const { month, year } = req.query;
 
     const user = await User.findById(userId);
-    if (!user || !user.groupId) return res.status(400).json({ msg: "Unauthorized" });
+    if (!user) return res.status(401).json({ msg: "Unauthorized" });
 
-    const { groupId } = user;
-    // Exclude other members' private transactions; exclude soft-deleted
-    let match = {
-      groupId: groupId,
-      deletedAt: null,
-      $or: [{ isPrivate: { $ne: true } }, { userId: user._id }],
-    };
+    const match = { ...buildScope(user) };
 
     const m = parseInt(month);
     const y = parseInt(year);
@@ -151,21 +155,22 @@ exports.getAnalytics = async (req, res) => {
       let startDate, endDate;
       if (m) {
         startDate = new Date(y, m - 1, 1);
-        endDate = new Date(y, m, 0, 23, 59, 59);
+        endDate   = new Date(y, m, 0, 23, 59, 59);
       } else {
         startDate = new Date(y, 0, 1);
-        endDate = new Date(y, 11, 31, 23, 59, 59);
+        endDate   = new Date(y, 11, 31, 23, 59, 59);
       }
       match.date = { $gte: startDate, $lte: endDate };
     }
 
-    // Previous month range for comparison
+    // Previous month comparison
     let prevIncome = 0, prevExpense = 0;
     if (m && y) {
       const prevDate = new Date(y, m - 2, 1);
       const prevEnd  = new Date(y, m - 1, 0, 23, 59, 59);
+      const prevScope = { ...buildScope(user), date: { $gte: prevDate, $lte: prevEnd } };
       const prevAgg = await Transaction.aggregate([
-        { $match: { groupId, date: { $gte: prevDate, $lte: prevEnd } } },
+        { $match: prevScope },
         { $group: { _id: "$type", total: { $sum: "$amount" } } }
       ]);
       prevAgg.forEach(a => {
@@ -178,44 +183,27 @@ exports.getAnalytics = async (req, res) => {
       { $match: match },
       {
         $facet: {
-          summary: [
-            { $group: { _id: "$type", total: { $sum: "$amount" } } },
-          ],
-          categoryBreakdown: [
+          summary:          [{ $group: { _id: "$type", total: { $sum: "$amount" } } }],
+          categoryBreakdown:[
             { $match: { type: "expense" } },
             { $group: { _id: "$category", total: { $sum: "$amount" } } },
             { $sort: { total: -1 } },
           ],
-          incomeBreakdown: [
+          incomeBreakdown:  [
             { $match: { type: "income" } },
             { $group: { _id: "$category", total: { $sum: "$amount" } } },
             { $sort: { total: -1 } },
           ],
           weeklyTrends: [
-            {
-              $group: {
-                _id: { week: { $week: "$date" }, type: "$type" },
-                total: { $sum: "$amount" }
-              }
-            },
+            { $group: { _id: { week: { $week: "$date" }, type: "$type" }, total: { $sum: "$amount" } } },
             { $sort: { "_id.week": 1 } }
           ],
           dailyBreakdown: [
-            {
-              $group: {
-                _id: { day: { $dayOfMonth: "$date" }, type: "$type" },
-                total: { $sum: "$amount" }
-              }
-            },
+            { $group: { _id: { day: { $dayOfMonth: "$date" }, type: "$type" }, total: { $sum: "$amount" } } },
             { $sort: { "_id.day": 1 } }
           ],
           memberBreakdown: [
-            {
-              $group: {
-                _id: { userId: "$userId", type: "$type" },
-                total: { $sum: "$amount" }
-              }
-            }
+            { $group: { _id: { userId: "$userId", type: "$type" }, total: { $sum: "$amount" } } }
           ]
         },
       },
@@ -223,18 +211,18 @@ exports.getAnalytics = async (req, res) => {
 
     const summaryData = analytics[0].summary;
     let totalIncome = 0, totalExpense = 0;
-    summaryData.forEach((item) => {
+    summaryData.forEach(item => {
       if (item._id === "income")  totalIncome  = item.total;
       if (item._id === "expense") totalExpense = item.total;
     });
 
-    const categoryBreakdown = analytics[0].categoryBreakdown.map((item) => ({
+    const categoryBreakdown = analytics[0].categoryBreakdown.map(item => ({
       category: item._id,
       amount: item.total,
       percentage: totalExpense > 0 ? ((item.total / totalExpense) * 100).toFixed(1) : 0,
     }));
 
-    const incomeBreakdown = analytics[0].incomeBreakdown.map((item) => ({
+    const incomeBreakdown = analytics[0].incomeBreakdown.map(item => ({
       category: item._id,
       amount: item.total,
       percentage: totalIncome > 0 ? ((item.total / totalIncome) * 100).toFixed(1) : 0,
@@ -246,7 +234,6 @@ exports.getAnalytics = async (req, res) => {
       amount: item.total
     }));
 
-    // Build daily breakdown: [{day, income, expense}]
     const dailyMap = {};
     analytics[0].dailyBreakdown.forEach(item => {
       const d = item._id.day;
@@ -255,7 +242,6 @@ exports.getAnalytics = async (req, res) => {
     });
     const dailyBreakdown = Object.values(dailyMap).sort((a, b) => a.day - b.day);
 
-    // Member breakdown with names
     const memberBreakdownRaw = analytics[0].memberBreakdown;
     const userIds = [...new Set(memberBreakdownRaw.map(m => m._id.userId))];
     const users = await User.find({ _id: { $in: userIds } }).select('name profilePhoto');
@@ -279,7 +265,7 @@ exports.getAnalytics = async (req, res) => {
       incomeBreakdown,
       weeklyTrends,
       dailyBreakdown,
-      memberBreakdown
+      memberBreakdown,
     });
   } catch (error) {
     console.error(error);
@@ -287,7 +273,7 @@ exports.getAnalytics = async (req, res) => {
   }
 };
 
-// @desc    Get monthly trend data for the last N months
+// @desc    Get monthly trend for the last N months
 // @route   GET /api/transactions/analytics/trend
 // @access  Private
 exports.getTrend = async (req, res) => {
@@ -296,13 +282,14 @@ exports.getTrend = async (req, res) => {
     const months = Math.min(parseInt(req.query.months) || 6, 12);
 
     const user = await User.findById(userId);
-    if (!user || !user.groupId) return res.status(400).json({ msg: "Unauthorized" });
+    if (!user) return res.status(401).json({ msg: "Unauthorized" });
 
-    const now = new Date();
+    const now       = new Date();
     const startDate = new Date(now.getFullYear(), now.getMonth() - (months - 1), 1);
 
+    const scope = buildScope(user);
     const agg = await Transaction.aggregate([
-      { $match: { groupId: user.groupId, date: { $gte: startDate } } },
+      { $match: { ...scope, date: { $gte: startDate } } },
       {
         $group: {
           _id: { year: { $year: "$date" }, month: { $month: "$date" }, type: "$type" },
@@ -324,14 +311,7 @@ exports.getTrend = async (req, res) => {
       const income  = incItem?.total || 0;
       const expense = expItem?.total || 0;
 
-      result.push({
-        month: m,
-        year: y,
-        monthLabel: d.toLocaleString('en', { month: 'short' }),
-        income,
-        expense,
-        net: income - expense
-      });
+      result.push({ month: m, year: y, monthLabel: d.toLocaleString('en', { month: 'short' }), income, expense, net: income - expense });
     }
 
     res.json(result);
@@ -354,53 +334,56 @@ exports.updateTransaction = async (req, res) => {
       return res.status(400).json({ msg: "Amount must be greater than 0" });
     }
 
-    let transaction = await Transaction.findById(req.params.id);
+    const transaction = await Transaction.findById(req.params.id);
     if (!transaction) return res.status(404).json({ msg: "Transaction not found" });
 
+    // Only the owner of the transaction can edit it
     if (transaction.userId.toString() !== userId) {
       return res.status(403).json({ msg: "You can only edit your own transactions" });
     }
 
     const user = await User.findById(userId);
-    if (transaction.groupId.toString() !== user.groupId.toString()) {
-      return res.status(403).json({ msg: "User not authorized" });
-    }
 
-    if (category) {
+    // Validate category against group if user is in one
+    if (category && user.groupId) {
       const group = await Group.findById(user.groupId);
-      const isValidCategory = group.categories.some(c => c.name === category);
-      if (!isValidCategory) return res.status(400).json({ msg: "Invalid category" });
+      if (group) {
+        const isValidCategory = group.categories.some(c => c.name === category);
+        if (!isValidCategory) return res.status(400).json({ msg: "Invalid category" });
+      }
     }
 
     const updatedFields = {};
     if (amount !== undefined) updatedFields.amount = amount;
-    if (type) updatedFields.type = type;
+    if (type)     updatedFields.type     = type;
     if (category) updatedFields.category = category;
     if (note !== undefined) updatedFields.note = note;
-    if (date) updatedFields.date = date;
+    if (date)     updatedFields.date     = date;
     if (currency) updatedFields.currency = currency;
     if (isPrivate !== undefined) updatedFields.isPrivate = !!isPrivate;
 
-    transaction = await Transaction.findByIdAndUpdate(
+    const updated = await Transaction.findByIdAndUpdate(
       req.params.id,
       { $set: updatedFields },
       { new: true }
     ).populate("userId", "name profilePhoto");
 
-    const io = req.app.get("io");
-    if (io) {
-      const { note: _omit, isRecurring, recurrenceFrequency, nextDueDate, ...socketPayload } = transaction.toObject();
-      io.to(user.groupId.toString()).emit("transaction_updated", socketPayload);
+    if (user.groupId && transaction.groupId?.toString() === user.groupId.toString()) {
+      const io = req.app.get("io");
+      if (io) {
+        const { note: _omit, isRecurring, recurrenceFrequency, nextDueDate, ...socketPayload } = updated.toObject();
+        io.to(user.groupId.toString()).emit("transaction_updated", socketPayload);
+      }
     }
 
-    res.json(transaction);
+    res.json(updated);
   } catch (error) {
     console.error(error);
     res.status(500).json({ msg: "Server Error" });
   }
 };
 
-// @desc    Generate AI-powered spending insights for a month
+// @desc    Generate AI spending insights
 // @route   GET /api/transactions/insights
 // @access  Private
 exports.getInsights = async (req, res) => {
@@ -409,19 +392,21 @@ exports.getInsights = async (req, res) => {
     const { month, year } = req.query;
 
     const user = await User.findById(userId);
-    if (!user || !user.groupId) return res.status(400).json({ msg: "Unauthorized" });
+    if (!user) return res.status(401).json({ msg: "Unauthorized" });
 
     const m = parseInt(month) || new Date().getMonth() + 1;
-    const y = parseInt(year) || new Date().getFullYear();
+    const y = parseInt(year)  || new Date().getFullYear();
 
     const startDate = new Date(y, m - 1, 1);
     const endDate   = new Date(y, m, 0, 23, 59, 59);
     const prevDate  = new Date(y, m - 2, 1);
     const prevEnd   = new Date(y, m - 1, 0, 23, 59, 59);
 
+    const scope = buildScope(user);
+
     const [analytics, prevAgg] = await Promise.all([
       Transaction.aggregate([
-        { $match: { groupId: user.groupId, date: { $gte: startDate, $lte: endDate } } },
+        { $match: { ...scope, date: { $gte: startDate, $lte: endDate } } },
         {
           $facet: {
             summary:     [{ $group: { _id: "$type", total: { $sum: "$amount" } } }],
@@ -435,7 +420,7 @@ exports.getInsights = async (req, res) => {
         }
       ]),
       Transaction.aggregate([
-        { $match: { groupId: user.groupId, date: { $gte: prevDate, $lte: prevEnd } } },
+        { $match: { ...scope, date: { $gte: prevDate, $lte: prevEnd } } },
         { $group: { _id: "$type", total: { $sum: "$amount" } } }
       ])
     ]);
@@ -485,10 +470,10 @@ Reply ONLY with a JSON array of exactly 3 objects:
     const aiClient       = new AnthropicClass({ apiKey: process.env.ANTHROPIC_API_KEY });
 
     const stream  = aiClient.messages.stream({
-      model:    'claude-opus-4-8',
+      model:      'claude-opus-4-8',
       max_tokens: 1024,
-      thinking: { type: 'adaptive' },
-      messages: [{ role: 'user', content: prompt }],
+      thinking:   { type: 'adaptive' },
+      messages:   [{ role: 'user', content: prompt }],
     });
     const message = await stream.finalMessage();
 
@@ -517,15 +502,20 @@ exports.deleteTransaction = async (req, res) => {
     if (!transaction || transaction.deletedAt) return res.status(404).json({ msg: "Transaction not found" });
 
     const user = await User.findById(userId);
-    if (transaction.groupId.toString() !== user.groupId.toString()) {
+
+    // Authorization: owner of the transaction OR a member of the same group
+    const isOwner       = transaction.userId.toString() === userId;
+    const isGroupMember = user.groupId && transaction.groupId?.toString() === user.groupId.toString();
+    if (!isOwner && !isGroupMember) {
       return res.status(401).json({ msg: "User not authorized" });
     }
 
-    // Soft delete — keeps the record for potential restore within 30 days
     await Transaction.findByIdAndUpdate(req.params.id, { deletedAt: new Date() });
 
-    const io = req.app.get("io");
-    if (io) io.to(user.groupId.toString()).emit("transaction_deleted", req.params.id);
+    if (isGroupMember) {
+      const io = req.app.get("io");
+      if (io) io.to(user.groupId.toString()).emit("transaction_deleted", req.params.id);
+    }
 
     res.json({ msg: "Transaction removed" });
   } catch (error) {
@@ -540,12 +530,9 @@ exports.restoreTransaction = async (req, res) => {
     const transaction = await Transaction.findById(req.params.id);
     if (!transaction || !transaction.deletedAt) return res.status(404).json({ msg: "Transaction not found or not deleted" });
 
-    const user = await User.findById(userId);
+    // Only the owner of the transaction can restore it
     if (transaction.userId.toString() !== userId) {
       return res.status(403).json({ msg: "You can only restore your own transactions" });
-    }
-    if (transaction.groupId.toString() !== user.groupId.toString()) {
-      return res.status(403).json({ msg: "User not authorized" });
     }
 
     await Transaction.findByIdAndUpdate(req.params.id, { deletedAt: null });
