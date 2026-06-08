@@ -35,7 +35,7 @@ exports.createGoal = async (req, res) => {
     });
 
     const io = req.app.get('io');
-    if (io) io.to(user.groupId.toString()).emit('goal_created', goal);
+    if (io) io.to(user.groupId.toString()).emit('goal_created', { _id: goal._id, groupId: goal.groupId });
 
     res.status(201).json(goal);
   } catch (err) {
@@ -69,7 +69,7 @@ exports.updateGoal = async (req, res) => {
     await goal.save();
 
     const io = req.app.get('io');
-    if (io) io.to(user.groupId.toString()).emit('goal_updated', goal);
+    if (io) io.to(user.groupId.toString()).emit('goal_updated', { _id: goal._id, groupId: goal.groupId });
 
     res.json(goal);
   } catch (err) {

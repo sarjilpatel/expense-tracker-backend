@@ -12,7 +12,14 @@ const { Server } = require("socket.io");
 const connectDB = require("./config/db");
 
 const cron = require("node-cron");
+const jwt = require("jsonwebtoken");
+const rateLimit = require("express-rate-limit");
 const Transaction = require("./models/Transaction");
+const User        = require("./models/User");
+const Goal        = require("./models/Goal");
+const Split       = require("./models/Split");
+const Budget      = require("./models/Budget");
+const Group       = require("./models/Group");
 
 const authRoutes = require("./routes/authRoutes");
 const groupRoutes = require("./routes/groupRoutes");
@@ -23,15 +30,33 @@ const splitRoutes = require("./routes/splitRoutes");
 
 const app = express();
 const server = http.createServer(app);
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+    : [];
+
 const io = new Server(server, {
     cors: {
-        origin: "*",
-        methods: ["GET", "POST", "PUT", "DELETE"]
+        origin: ALLOWED_ORIGINS.length > 0 ? ALLOWED_ORIGINS : false,
+        methods: ["GET", "POST", "PUT", "DELETE"],
+        credentials: true,
     }
 });
 
-app.use(cors());
+app.use(cors({
+    origin: ALLOWED_ORIGINS.length > 0 ? ALLOWED_ORIGINS : false,
+    credentials: true,
+}));
 app.use(express.json());
+
+// Global rate limiter — 60 requests/minute per IP across all /api routes
+const apiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message: "Too many requests, please slow down." },
+});
+app.use('/api', apiLimiter);
 
 // Attach io to app so it's accessible in controllers
 app.set("io", io);
@@ -45,18 +70,33 @@ app.use("/api/budgets", budgetRoutes);
 app.use("/api/goals",  goalRoutes);
 app.use("/api/splits", splitRoutes);
 
-io.on("connection", (socket) => {
-    console.log("Socket connected:", socket.id);
+// Verify JWT on every socket connection — reject unauthenticated sockets
+io.use((socket, next) => {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error("Authentication required"));
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        socket.data.userId = decoded.id;
+        next();
+    } catch {
+        next(new Error("Invalid or expired token"));
+    }
+});
 
-    socket.on("join_group", (groupId) => {
-        if (groupId) {
+io.on("connection", (socket) => {
+    socket.on("join_group", async (groupId) => {
+        if (!groupId) return;
+        try {
+            const user = await User.findById(socket.data.userId).select("groupId").lean();
+            if (!user || !user.groupId || user.groupId.toString() !== groupId) return;
             socket.join(groupId);
-            console.log(`Socket ${socket.id} joined room: ${groupId}`);
+        } catch {
+            // silently ignore — client will rely on HTTP for data
         }
     });
 
     socket.on("disconnect", () => {
-        console.log("Socket disconnected:", socket.id);
+        // no-op: nothing sensitive to log
     });
 });
 
@@ -64,11 +104,13 @@ app.get("/", (req, res) => {
     res.send("Expense Tracker API with Socket.IO running");
 });
 
-// Run every day at midnight to generate due recurring transactions
-cron.schedule("0 0 * * *", async () => {
+// Run every hour — generate recurring transactions for any user whose local midnight is within the current hour
+cron.schedule("0 * * * *", async () => {
     try {
         const now = new Date();
-        const due = await Transaction.find({ isRecurring: true, nextDueDate: { $lte: now } });
+        // Add 1h buffer to catch any timezone that is at or past local midnight
+        const windowEnd = new Date(now.getTime() + 60 * 60 * 1000);
+        const due = await Transaction.find({ isRecurring: true, nextDueDate: { $lte: windowEnd } });
 
         for (const tx of due) {
             const newTx = await Transaction.create({
@@ -92,11 +134,33 @@ cron.schedule("0 0 * * *", async () => {
             io.to(tx.groupId.toString()).emit("new_transaction", newTx);
         }
 
-        if (due.length > 0) {
-            console.log(`Cron: generated ${due.length} recurring transactions`);
+    } catch {
+        // Cron errors are non-fatal; log count only to avoid leaking data
+        if (process.env.NODE_ENV !== 'production') {
+            console.error("Cron job error — check server");
         }
-    } catch (err) {
-        console.error("Cron job error:", err);
+    }
+});
+
+// Nightly purge — permanently delete accounts whose 30-day grace period has passed
+cron.schedule("5 0 * * *", async () => {
+    try {
+        const now = new Date();
+        const due = await User.find({ pendingDeletion: true, deletionScheduledAt: { $lte: now } });
+        for (const user of due) {
+            const userId = user._id;
+            await Transaction.deleteMany({ userId });
+            await Goal.deleteMany({ userId });
+            await Budget.deleteMany({ groupId: user.groupId });
+            await Split.updateMany({ 'splits.userId': userId }, { $pull: { splits: { userId } } });
+            await Split.deleteMany({ paidBy: userId });
+            if (user.groupId) {
+                await Group.updateOne({ _id: user.groupId }, { $pull: { members: userId } });
+            }
+            await User.findByIdAndDelete(userId);
+        }
+    } catch {
+        if (process.env.NODE_ENV !== 'production') console.error("Account purge cron error");
     }
 });
 
@@ -109,4 +173,8 @@ function computeNextDueDate(from, frequency) {
 }
 
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+server.listen(PORT, () => {
+    if (process.env.NODE_ENV !== 'production') {
+        console.log(`Server running on port ${PORT}`);
+    }
+});

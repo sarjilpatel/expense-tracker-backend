@@ -7,11 +7,15 @@ const Group = require("../models/Group");
 // @access  Private
 exports.addTransaction = async (req, res) => {
   try {
-    const { amount, type, category, date, isRecurring, recurrenceFrequency, currency } = req.body;
+    const { amount, type, category, date, isRecurring, recurrenceFrequency, currency, isPrivate } = req.body;
     const note = req.body.note ? String(req.body.note).trim().slice(0, 200) : undefined;
     const userId = req.user.id;
 
     // Ensure user exists and get groupId
+    if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
+      return res.status(400).json({ msg: "Amount must be greater than 0" });
+    }
+
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ msg: "User not found" });
     if (!user.groupId) return res.status(400).json({ msg: "User not in group" });
@@ -46,13 +50,15 @@ exports.addTransaction = async (req, res) => {
       isRecurring: !!isRecurring,
       recurrenceFrequency: isRecurring ? recurrenceFrequency : null,
       nextDueDate,
+      isPrivate: !!isPrivate,
     });
 
-    // Handle real-time notification
+    // Broadcast a stripped payload — note field excluded to minimise data in transit
     const io = req.app.get("io");
     if (io) {
       const populatedTx = await Transaction.findById(transaction._id).populate("userId", "name profilePhoto");
-      io.to(user.groupId.toString()).emit("new_transaction", populatedTx);
+      const { note: _omit, isRecurring, recurrenceFrequency, nextDueDate, ...socketPayload } = populatedTx.toObject();
+      io.to(user.groupId.toString()).emit("new_transaction", socketPayload);
     }
 
     res.status(201).json(transaction);
@@ -68,12 +74,17 @@ exports.addTransaction = async (req, res) => {
 exports.getTransactions = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { month, year, search } = req.query;
+    const { month, year, search, page, limit: limitParam } = req.query;
 
     const user = await User.findById(userId);
     if (!user || !user.groupId) return res.status(400).json({ msg: "Unauthorized" });
 
-    let query = { groupId: user.groupId };
+    // Exclude private transactions that belong to other group members; exclude soft-deleted
+    let query = {
+      groupId: user.groupId,
+      deletedAt: null,
+      $or: [{ isPrivate: { $ne: true } }, { userId: user._id }],
+    };
 
     if (year) {
       let startDate, endDate;
@@ -95,11 +106,19 @@ exports.getTransactions = async (req, res) => {
       ];
     }
 
-    const transactions = await Transaction.find(query)
-      .sort({ date: -1 })
-      .populate("userId", "name profilePhoto");
+    const pageNum  = Math.max(1, parseInt(page  || '1',  10));
+    const pageSize = Math.min(100, Math.max(1, parseInt(limitParam || '50', 10)));
+    const skip     = (pageNum - 1) * pageSize;
 
-    res.json(transactions);
+    const [transactions, total] = await Promise.all([
+      Transaction.find(query).sort({ date: -1 }).skip(skip).limit(pageSize).populate("userId", "name profilePhoto"),
+      Transaction.countDocuments(query),
+    ]);
+
+    res.json({
+      transactions,
+      pagination: { page: pageNum, limit: pageSize, total, pages: Math.ceil(total / pageSize) },
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ msg: "Server Error" });
@@ -118,7 +137,12 @@ exports.getAnalytics = async (req, res) => {
     if (!user || !user.groupId) return res.status(400).json({ msg: "Unauthorized" });
 
     const { groupId } = user;
-    let match = { groupId: groupId };
+    // Exclude other members' private transactions; exclude soft-deleted
+    let match = {
+      groupId: groupId,
+      deletedAt: null,
+      $or: [{ isPrivate: { $ne: true } }, { userId: user._id }],
+    };
 
     const m = parseInt(month);
     const y = parseInt(year);
@@ -322,9 +346,13 @@ exports.getTrend = async (req, res) => {
 // @access  Private
 exports.updateTransaction = async (req, res) => {
   try {
-    const { amount, type, category, date, currency } = req.body;
+    const { amount, type, category, date, currency, isPrivate } = req.body;
     const note = req.body.note !== undefined ? String(req.body.note).trim().slice(0, 200) : undefined;
     const userId = req.user.id;
+
+    if (amount !== undefined && (isNaN(Number(amount)) || Number(amount) <= 0)) {
+      return res.status(400).json({ msg: "Amount must be greater than 0" });
+    }
 
     let transaction = await Transaction.findById(req.params.id);
     if (!transaction) return res.status(404).json({ msg: "Transaction not found" });
@@ -351,6 +379,7 @@ exports.updateTransaction = async (req, res) => {
     if (note !== undefined) updatedFields.note = note;
     if (date) updatedFields.date = date;
     if (currency) updatedFields.currency = currency;
+    if (isPrivate !== undefined) updatedFields.isPrivate = !!isPrivate;
 
     transaction = await Transaction.findByIdAndUpdate(
       req.params.id,
@@ -359,7 +388,10 @@ exports.updateTransaction = async (req, res) => {
     ).populate("userId", "name profilePhoto");
 
     const io = req.app.get("io");
-    if (io) io.to(user.groupId.toString()).emit("transaction_updated", transaction);
+    if (io) {
+      const { note: _omit, isRecurring, recurrenceFrequency, nextDueDate, ...socketPayload } = transaction.toObject();
+      io.to(user.groupId.toString()).emit("transaction_updated", socketPayload);
+    }
 
     res.json(transaction);
   } catch (error) {
@@ -482,19 +514,42 @@ exports.deleteTransaction = async (req, res) => {
   try {
     const userId = req.user.id;
     const transaction = await Transaction.findById(req.params.id);
-    if (!transaction) return res.status(404).json({ msg: "Transaction not found" });
+    if (!transaction || transaction.deletedAt) return res.status(404).json({ msg: "Transaction not found" });
 
     const user = await User.findById(userId);
     if (transaction.groupId.toString() !== user.groupId.toString()) {
       return res.status(401).json({ msg: "User not authorized" });
     }
 
-    await Transaction.findByIdAndDelete(req.params.id);
+    // Soft delete — keeps the record for potential restore within 30 days
+    await Transaction.findByIdAndUpdate(req.params.id, { deletedAt: new Date() });
 
     const io = req.app.get("io");
     if (io) io.to(user.groupId.toString()).emit("transaction_deleted", req.params.id);
 
     res.json({ msg: "Transaction removed" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ msg: "Server Error" });
+  }
+};
+
+exports.restoreTransaction = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const transaction = await Transaction.findById(req.params.id);
+    if (!transaction || !transaction.deletedAt) return res.status(404).json({ msg: "Transaction not found or not deleted" });
+
+    const user = await User.findById(userId);
+    if (transaction.userId.toString() !== userId) {
+      return res.status(403).json({ msg: "You can only restore your own transactions" });
+    }
+    if (transaction.groupId.toString() !== user.groupId.toString()) {
+      return res.status(403).json({ msg: "User not authorized" });
+    }
+
+    await Transaction.findByIdAndUpdate(req.params.id, { deletedAt: null });
+    res.json({ msg: "Transaction restored" });
   } catch (error) {
     console.error(error);
     res.status(500).json({ msg: "Server Error" });

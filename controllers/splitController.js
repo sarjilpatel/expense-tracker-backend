@@ -57,7 +57,7 @@ exports.createSplit = async (req, res) => {
     const populated = await splitDoc.populate(populate);
 
     const io = req.app.get('io');
-    if (io) io.to(user.groupId.toString()).emit('split_created', populated);
+    if (io) io.to(user.groupId.toString()).emit('split_created', { _id: splitDoc._id, groupId: splitDoc.groupId });
 
     res.status(201).json(populated);
   } catch (err) {
@@ -85,7 +85,7 @@ exports.settleSplit = async (req, res) => {
     const populated = await split.populate(populate);
 
     const io = req.app.get('io');
-    if (io) io.to(user.groupId.toString()).emit('split_updated', populated);
+    if (io) io.to(user.groupId.toString()).emit('split_updated', { _id: split._id, groupId: split.groupId });
 
     res.json(populated);
   } catch (err) {

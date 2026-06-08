@@ -54,6 +54,14 @@ const transactionSchema = new mongoose.Schema({
     type: Date,
     default: null,
   },
+  isPrivate: {
+    type: Boolean,
+    default: false,
+  },
+  deletedAt: {
+    type: Date,
+    default: null,
+  },
 });
 
 transactionSchema.index({ note: 'text', category: 'text' });

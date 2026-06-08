@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const auth = require("../middleware/authMiddleware");
+const { validateTransaction } = require("../middleware/validate");
 const {
   addTransaction,
   getTransactions,
@@ -9,12 +10,13 @@ const {
   getInsights,
   updateTransaction,
   deleteTransaction,
+  restoreTransaction,
 } = require("../controllers/transactionController");
 
 // @route   POST /api/transactions
 // @desc    Add a new transaction
 // @access  Private
-router.post("/", auth, addTransaction);
+router.post("/", auth, validateTransaction, addTransaction);
 
 // @route   GET /api/transactions
 // @desc    Get all transactions for the user's group
@@ -39,11 +41,16 @@ router.get("/insights", auth, getInsights);
 // @route   PUT /api/transactions/:id
 // @desc    Update a transaction
 // @access  Private
-router.put("/:id", auth, updateTransaction);
+router.put("/:id", auth, validateTransaction, updateTransaction);
 
 // @route   DELETE /api/transactions/:id
-// @desc    Delete a transaction
+// @desc    Soft-delete a transaction (restorable within 30 days)
 // @access  Private
 router.delete("/:id", auth, deleteTransaction);
+
+// @route   POST /api/transactions/:id/restore
+// @desc    Restore a soft-deleted transaction
+// @access  Private
+router.post("/:id/restore", auth, restoreTransaction);
 
 module.exports = router;
