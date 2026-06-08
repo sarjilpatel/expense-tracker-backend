@@ -368,6 +368,116 @@ exports.updateTransaction = async (req, res) => {
   }
 };
 
+// @desc    Generate AI-powered spending insights for a month
+// @route   GET /api/transactions/insights
+// @access  Private
+exports.getInsights = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { month, year } = req.query;
+
+    const user = await User.findById(userId);
+    if (!user || !user.groupId) return res.status(400).json({ msg: "Unauthorized" });
+
+    const m = parseInt(month) || new Date().getMonth() + 1;
+    const y = parseInt(year) || new Date().getFullYear();
+
+    const startDate = new Date(y, m - 1, 1);
+    const endDate   = new Date(y, m, 0, 23, 59, 59);
+    const prevDate  = new Date(y, m - 2, 1);
+    const prevEnd   = new Date(y, m - 1, 0, 23, 59, 59);
+
+    const [analytics, prevAgg] = await Promise.all([
+      Transaction.aggregate([
+        { $match: { groupId: user.groupId, date: { $gte: startDate, $lte: endDate } } },
+        {
+          $facet: {
+            summary:     [{ $group: { _id: "$type", total: { $sum: "$amount" } } }],
+            topExpenses: [
+              { $match: { type: "expense" } },
+              { $group: { _id: "$category", total: { $sum: "$amount" } } },
+              { $sort: { total: -1 } },
+              { $limit: 5 }
+            ],
+          }
+        }
+      ]),
+      Transaction.aggregate([
+        { $match: { groupId: user.groupId, date: { $gte: prevDate, $lte: prevEnd } } },
+        { $group: { _id: "$type", total: { $sum: "$amount" } } }
+      ])
+    ]);
+
+    let totalIncome = 0, totalExpense = 0, prevIncome = 0, prevExpense = 0;
+    analytics[0].summary.forEach(a => {
+      if (a._id === 'income')  totalIncome  = a.total;
+      if (a._id === 'expense') totalExpense = a.total;
+    });
+    prevAgg.forEach(a => {
+      if (a._id === 'income')  prevIncome  = a.total;
+      if (a._id === 'expense') prevExpense = a.total;
+    });
+
+    if (totalIncome === 0 && totalExpense === 0) {
+      return res.json({ insights: [], month: m, year: y, noData: true });
+    }
+
+    const topExpenses = analytics[0].topExpenses.map(c => ({
+      category: c._id,
+      amount:   c.total,
+      pct:      totalExpense > 0 ? ((c.total / totalExpense) * 100).toFixed(1) : '0'
+    }));
+
+    const monthName   = new Date(y, m - 1).toLocaleString('en', { month: 'long' });
+    const savings     = totalIncome - totalExpense;
+    const savingsRate = totalIncome > 0 ? ((savings / totalIncome) * 100).toFixed(1) : null;
+    const expChange   = prevExpense > 0 ? ((totalExpense - prevExpense) / prevExpense * 100).toFixed(1) : null;
+    const fmt         = n => n.toLocaleString('en-IN');
+
+    const prompt =
+`You are a personal finance advisor for an Indian household. Analyze this data for ${monthName} ${y} and give 3 sharp, specific insights. Use ₹ for currency. Be friendly and actionable.
+
+Summary:
+- Income: ₹${fmt(totalIncome)}
+- Expenses: ₹${fmt(totalExpense)}
+- Net Savings: ₹${fmt(savings)}${savingsRate !== null ? ` (${savingsRate}% savings rate)` : ''}${expChange !== null ? `\n- Expense change vs last month: ${parseFloat(expChange) >= 0 ? '+' : ''}${expChange}%` : ''}${prevExpense > 0 ? `\n- Last month expenses: ₹${fmt(prevExpense)}` : ''}
+
+Top expense categories:
+${topExpenses.map(c => `- ${c.category}: ₹${fmt(c.amount)} (${c.pct}%)`).join('\n')}
+
+Reply ONLY with a JSON array of exactly 3 objects:
+[{"title":"Short Title","body":"2-sentence insight with specific numbers.","type":"positive|warning|neutral"}]`;
+
+    const AnthropicSdk   = require('@anthropic-ai/sdk');
+    const AnthropicClass = AnthropicSdk.default || AnthropicSdk;
+    const aiClient       = new AnthropicClass({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+    const stream  = aiClient.messages.stream({
+      model:    'claude-opus-4-8',
+      max_tokens: 1024,
+      thinking: { type: 'adaptive' },
+      messages: [{ role: 'user', content: prompt }],
+    });
+    const message = await stream.finalMessage();
+
+    const textBlock = message.content.find(c => c.type === 'text');
+    const rawText   = textBlock?.text?.trim() || '[]';
+
+    let insights;
+    try {
+      const json = rawText.replace(/^```[a-z]*\n?|```\s*$/g, '').trim();
+      insights   = JSON.parse(json);
+    } catch {
+      insights = [{ title: 'Monthly Summary', body: rawText, type: 'neutral' }];
+    }
+
+    res.json({ insights, month: m, year: y });
+  } catch (error) {
+    console.error('AI Insights error:', error.message);
+    res.status(500).json({ msg: 'Failed to generate insights' });
+  }
+};
+
 exports.deleteTransaction = async (req, res) => {
   try {
     const userId = req.user.id;

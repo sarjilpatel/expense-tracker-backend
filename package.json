@@ -11,6 +11,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.102.0",
     "@aws-sdk/client-s3": "^3.1034.0",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",

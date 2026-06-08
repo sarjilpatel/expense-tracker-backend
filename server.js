@@ -18,6 +18,8 @@ const authRoutes = require("./routes/authRoutes");
 const groupRoutes = require("./routes/groupRoutes");
 const transactionRoutes = require("./routes/transactionRoutes");
 const budgetRoutes = require("./routes/budgetRoutes");
+const goalRoutes  = require("./routes/goalRoutes");
+const splitRoutes = require("./routes/splitRoutes");
 
 const app = express();
 const server = http.createServer(app);
@@ -40,6 +42,8 @@ app.use("/api/auth", authRoutes);
 app.use("/api/group", groupRoutes);
 app.use("/api/transactions", transactionRoutes);
 app.use("/api/budgets", budgetRoutes);
+app.use("/api/goals",  goalRoutes);
+app.use("/api/splits", splitRoutes);
 
 io.on("connection", (socket) => {
     console.log("Socket connected:", socket.id);
