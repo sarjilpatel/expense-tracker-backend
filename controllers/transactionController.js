@@ -1,6 +1,7 @@
 const Transaction = require("../models/Transaction");
 const User = require("../models/User");
 const Group = require("../models/Group");
+const { encryptField, decryptField } = require('../utils/fieldCrypto');
 
 // Returns a Mongoose query filter scoped to what the user can see.
 // Group members see all group transactions (excluding others' private ones).
@@ -22,8 +23,9 @@ function buildScope(user) {
 exports.addTransaction = async (req, res) => {
   try {
     const { amount, type, category, date, isRecurring, recurrenceFrequency, currency, isPrivate } = req.body;
-    const note = req.body.note ? String(req.body.note).trim().slice(0, 200) : undefined;
-    const userId = req.user.id;
+    const noteRaw = req.body.note ? String(req.body.note).trim().slice(0, 200) : undefined;
+    const note    = noteRaw ? encryptField(noteRaw) : noteRaw;
+    const userId  = req.user.id;
 
     if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
       return res.status(400).json({ msg: "Amount must be greater than 0" });
@@ -121,12 +123,17 @@ exports.getTransactions = async (req, res) => {
     const skip     = (pageNum - 1) * pageSize;
 
     const [transactions, total] = await Promise.all([
-      Transaction.find(query).sort({ date: -1 }).skip(skip).limit(pageSize).populate("userId", "name profilePhoto"),
+      Transaction.find(query).sort({ date: -1 }).skip(skip).limit(pageSize).populate("userId", "name profilePhoto").lean(),
       Transaction.countDocuments(query),
     ]);
 
+    const decrypted = transactions.map(tx => ({
+      ...tx,
+      note: tx.note ? decryptField(tx.note) : tx.note,
+    }));
+
     res.json({
-      transactions,
+      transactions: decrypted,
       pagination: { page: pageNum, limit: pageSize, total, pages: Math.ceil(total / pageSize) },
     });
   } catch (error) {
@@ -327,8 +334,9 @@ exports.getTrend = async (req, res) => {
 exports.updateTransaction = async (req, res) => {
   try {
     const { amount, type, category, date, currency, isPrivate } = req.body;
-    const note = req.body.note !== undefined ? String(req.body.note).trim().slice(0, 200) : undefined;
-    const userId = req.user.id;
+    const noteRaw = req.body.note !== undefined ? String(req.body.note).trim().slice(0, 200) : undefined;
+    const note    = noteRaw !== undefined ? encryptField(noteRaw) : undefined;
+    const userId  = req.user.id;
 
     if (amount !== undefined && (isNaN(Number(amount)) || Number(amount) <= 0)) {
       return res.status(400).json({ msg: "Amount must be greater than 0" });
@@ -540,5 +548,59 @@ exports.restoreTransaction = async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ msg: "Server Error" });
+  }
+};
+
+const VALID_TYPES      = new Set(['income', 'expense']);
+const VALID_CURRENCIES = new Set(['INR', 'USD', 'EUR', 'GBP', 'AED', 'JPY', 'CAD', 'AUD']);
+
+exports.importTransactions = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { transactions } = req.body;
+
+    if (!Array.isArray(transactions) || transactions.length === 0) {
+      return res.status(400).json({ msg: 'transactions must be a non-empty array' });
+    }
+    if (transactions.length > 500) {
+      return res.status(400).json({ msg: 'Maximum 500 transactions per import' });
+    }
+
+    const docs = transactions
+      .filter(t => Number(t.amount) > 0)
+      .map(t => {
+        const noteRaw = t.note ? String(t.note).trim().slice(0, 200) : undefined;
+        return {
+          amount:   Number(t.amount),
+          type:     VALID_TYPES.has(t.type) ? t.type : 'expense',
+          category: String(t.category || 'Other').slice(0, 50),
+          note:     noteRaw ? encryptField(noteRaw) : undefined,
+          userId,
+          date:     t.date ? new Date(t.date) : new Date(),
+          currency: VALID_CURRENCIES.has(t.currency) ? t.currency : 'INR',
+          isPrivate: !!t.isPrivate,
+        };
+      });
+
+    if (docs.length === 0) {
+      return res.status(400).json({ msg: 'No valid transactions found' });
+    }
+
+    const created = await Transaction.insertMany(docs, { ordered: false });
+    res.status(201).json({ imported: created.length });
+  } catch (error) {
+    console.error('Import error:', error);
+    res.status(500).json({ msg: 'Server Error' });
+  }
+};
+
+exports.deleteAllTransactions = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const result = await Transaction.deleteMany({ userId });
+    res.json({ deleted: result.deletedCount });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ msg: 'Server Error' });
   }
 };

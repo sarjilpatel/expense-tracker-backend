@@ -20,6 +20,8 @@ const userSchema = new mongoose.Schema({
     // password reset
     passwordResetToken:   { type: String, default: null },
     passwordResetExpires: { type: Date,   default: null },
+    // Google OAuth
+    googleId: { type: String, default: null },
     // AI consent
     aiConsentGiven: { type: Boolean, default: false },
     // timezone (IANA, e.g. "Asia/Kolkata") — used for recurring transaction scheduling

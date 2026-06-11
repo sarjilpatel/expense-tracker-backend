@@ -21,12 +21,13 @@ const Split       = require("./models/Split");
 const Budget      = require("./models/Budget");
 const Group       = require("./models/Group");
 
-const authRoutes = require("./routes/authRoutes");
-const groupRoutes = require("./routes/groupRoutes");
+const authRoutes        = require("./routes/authRoutes");
+const groupRoutes       = require("./routes/groupRoutes");
 const transactionRoutes = require("./routes/transactionRoutes");
-const budgetRoutes = require("./routes/budgetRoutes");
-const goalRoutes  = require("./routes/goalRoutes");
-const splitRoutes = require("./routes/splitRoutes");
+const budgetRoutes      = require("./routes/budgetRoutes");
+const goalRoutes        = require("./routes/goalRoutes");
+const splitRoutes       = require("./routes/splitRoutes");
+const userRoutes        = require("./routes/userRoutes");
 
 const app = express();
 const server = http.createServer(app);
@@ -64,12 +65,13 @@ app.set("io", io);
 
 connectDB();
 
-app.use("/api/auth", authRoutes);
-app.use("/api/group", groupRoutes);
+app.use("/api/auth",         authRoutes);
+app.use("/api/group",        groupRoutes);
 app.use("/api/transactions", transactionRoutes);
-app.use("/api/budgets", budgetRoutes);
-app.use("/api/goals",  goalRoutes);
-app.use("/api/splits", splitRoutes);
+app.use("/api/budgets",      budgetRoutes);
+app.use("/api/goals",        goalRoutes);
+app.use("/api/splits",       splitRoutes);
+app.use("/api/user",         userRoutes);
 
 // Verify JWT on every socket connection — reject unauthenticated sockets
 io.use((socket, next) => {

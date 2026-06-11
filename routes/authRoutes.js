@@ -4,7 +4,7 @@ const rateLimit = require("express-rate-limit");
 const {
   signup, login, getMe, updateProfile, deleteAccount, cancelDeletion, refreshToken,
   forgotPassword, resetPassword, verifyEmail, resendVerification,
-  updateAiConsent, getProfilePhotoUrl,
+  updateAiConsent, getProfilePhotoUrl, googleAuth,
 } = require("../controllers/authController");
 const auth   = require("../middleware/authMiddleware");
 const upload = require("../middleware/uploadMiddleware");
@@ -26,6 +26,7 @@ const resetLimiter = rateLimit({
     message: { message: "Too many reset attempts, please try again in an hour." }
 });
 
+router.post("/google",                     authLimiter,                          googleAuth);
 router.post("/signup",                     authLimiter,  validateSignup,         signup);
 router.post("/login",                      authLimiter,  validateLogin,          login);
 router.post("/refresh",                    refreshToken);

@@ -8,6 +8,7 @@ const Transaction = require("../models/Transaction");
 const Goal        = require("../models/Goal");
 const Split       = require("../models/Split");
 const Budget      = require("../models/Budget");
+const Group       = require("../models/Group");
 const { s3Client }                          = require("../middleware/uploadMiddleware");
 const { sendPasswordResetEmail, sendVerificationEmail } = require("../utils/mailer");
 
@@ -267,6 +268,81 @@ exports.resendVerification = async (req, res) => {
         res.json({ message: "Verification email sent." });
     } catch (error) {
         res.status(500).json({ message: "Failed to resend verification email" });
+    }
+};
+
+exports.googleAuth = async (req, res) => {
+    try {
+        const { idToken } = req.body;
+        if (!idToken) return res.status(400).json({ message: 'idToken required' });
+
+        const googleRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
+        const payload   = await googleRes.json();
+
+        if (!googleRes.ok || payload.error || payload.error_description) {
+            return res.status(401).json({ message: 'Invalid Google token' });
+        }
+
+        const clientId = process.env.GOOGLE_CLIENT_ID;
+        if (clientId && payload.aud !== clientId) {
+            return res.status(401).json({ message: 'Token audience mismatch' });
+        }
+
+        const { email, name, sub: googleId, picture } = payload;
+        if (!email) return res.status(400).json({ message: 'No email in Google token' });
+
+        let user = await User.findOne({ email });
+        if (!user) {
+            user = await User.create({
+                name:            name || email.split('@')[0],
+                email,
+                password:        crypto.randomBytes(32).toString('hex'),
+                isEmailVerified: true,
+                googleId,
+                profilePhoto:    picture || '',
+            });
+        } else {
+            const updates = {};
+            if (!user.isEmailVerified) updates.isEmailVerified = true;
+            if (!user.googleId)        updates.googleId        = googleId;
+            if (Object.keys(updates).length > 0) {
+                await User.findByIdAndUpdate(user._id, updates);
+                Object.assign(user, updates);
+            }
+        }
+
+        const token        = jwt.sign({ id: user._id }, process.env.JWT_SECRET,           { expiresIn: '1h'   });
+        const refreshToken = jwt.sign({ id: user._id }, process.env.REFRESH_TOKEN_SECRET, { expiresIn: '365d' });
+
+        const userResponse = user.toObject();
+        delete userResponse.password;
+
+        res.json({ token, refreshToken, user: userResponse });
+    } catch (error) {
+        console.error('Google auth error:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+exports.deleteAllData = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const user   = await User.findById(userId);
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        await Transaction.deleteMany({ userId });
+        await Goal.deleteMany({ userId });
+        await Budget.deleteMany({ userId });
+        await Split.deleteMany({ $or: [{ paidBy: userId }, { 'splits.userId': userId }] });
+        if (user.groupId) {
+            await Group.updateOne({ _id: user.groupId }, { $pull: { members: userId } });
+        }
+        await User.findByIdAndDelete(userId);
+
+        res.json({ message: 'All data deleted successfully' });
+    } catch (error) {
+        console.error('Delete all data error:', error);
+        res.status(500).json({ message: 'Failed to delete all data' });
     }
 };
 

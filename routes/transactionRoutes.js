@@ -11,7 +11,19 @@ const {
   updateTransaction,
   deleteTransaction,
   restoreTransaction,
+  importTransactions,
+  deleteAllTransactions,
 } = require("../controllers/transactionController");
+
+// @route   POST /api/transactions/import-json
+// @desc    Bulk import transactions from JSON (backup restore / Excel import)
+// @access  Private
+router.post("/import-json", auth, importTransactions);
+
+// @route   DELETE /api/transactions/all
+// @desc    Delete all transactions for the authenticated user
+// @access  Private
+router.delete("/all", auth, deleteAllTransactions);
 
 // @route   POST /api/transactions
 // @desc    Add a new transaction
