@@ -1,15 +1,7 @@
 const Group = require("../models/Group");
 const User = require("../models/User");
-const crypto = require("crypto");
-
-async function generateUniqueJoinCode() {
-    for (let attempt = 0; attempt < 5; attempt++) {
-        const code = crypto.randomBytes(3).toString("hex").toUpperCase();
-        const existing = await Group.findOne({ joinCode: code });
-        if (!existing) return code;
-    }
-    throw new Error("Failed to generate unique join code after 5 attempts");
-}
+const { resolveActiveGroup, generateUniqueJoinCode } = require("../utils/personalGroup");
+const { listPresets, newCategoriesFor }              = require("../utils/categoryPresets");
 
 exports.createGroup = async (req, res) => {
     try {
@@ -23,6 +15,9 @@ exports.createGroup = async (req, res) => {
         const userId   = req.user.id;
         const joinCode = await generateUniqueJoinCode();
 
+        // isPersonal stays false: this is a group the user means to share, which is what gives it a
+        // join code and a member list. Their personal group is left alone — they can switch back to
+        // it from the group list, and the categories they built up there can be imported across.
         const group = await Group.create({
             name:    groupName,
             joinCode,
@@ -108,9 +103,13 @@ exports.approveJoinRequest = async (req, res) => {
         }
         await group.save();
 
-        // Set groupId on the approved user (only if they don't already have one)
-        const approvedUser = await User.findById(userId);
-        if (approvedUser && !approvedUser.groupId) {
+        // Switch the approved user into the group they asked to join. The old condition here was
+        // `!approvedUser.groupId`, which stopped being true the moment every account got a personal
+        // group — an approved member would have been added to `members` and then left sitting in
+        // their own space. Someone already in another *shared* group keeps it and switches by hand.
+        const approvedUser = await User.findById(userId).populate("groupId", "isPersonal");
+        const inPersonal   = !approvedUser?.groupId || approvedUser.groupId.isPersonal;
+        if (approvedUser && inPersonal && String(approvedUser.groupId?._id) !== String(group._id)) {
             await User.findByIdAndUpdate(userId, { groupId: group._id });
         }
 
@@ -149,13 +148,14 @@ exports.getGroupDetails = async (req, res) => {
         const userId = req.user.id;
         const user   = await User.findById(userId);
 
-        if (!user.groupId) {
-            return res.status(404).json({ message: "You are not in any group" });
-        }
+        // Never 404 any more. This endpoint is the app's category source for six screens, and a
+        // user with no group used to get "You are not in any group" from all of them; now they get
+        // their personal group, created here if this is the first time anything asked for it.
+        const active = await resolveActiveGroup(user);
+        const group  = await Group.findById(active._id).populate("members", "name email");
 
-        let group = await Group.findById(user.groupId).populate("members", "name email");
-
-        if (!group.joinCode) {
+        // A personal group is not joinable, so it deliberately has no code to hand out.
+        if (!group.joinCode && !group.isPersonal) {
             group.joinCode = await generateUniqueJoinCode();
             await group.save();
         }
@@ -171,8 +171,10 @@ exports.getUserGroups = async (req, res) => {
         const userId = req.user.id;
         const groups = await Group.find({ members: userId });
 
+        // Backfills a missing code, except on a personal group — that one has none on purpose, and
+        // giving it one would make someone's own space joinable by anyone holding the code.
         const fixedGroups = await Promise.all(groups.map(async (g) => {
-            if (!g.joinCode) {
+            if (!g.joinCode && !g.isPersonal) {
                 g.joinCode = await generateUniqueJoinCode();
                 await g.save();
             }
@@ -202,7 +204,7 @@ exports.switchActiveGroup = async (req, res) => {
 
 exports.addCategory = async (req, res) => {
     try {
-        const { icon, type } = req.body;
+        const { icon, type, emoji } = req.body;
         const rawName = req.body.name;
         if (!rawName || typeof rawName !== 'string') {
             return res.status(400).json({ message: "Category name is required" });
@@ -212,10 +214,15 @@ exports.addCategory = async (req, res) => {
 
         const userId = req.user.id;
         const user   = await User.findById(userId);
-        if (!user.groupId) return res.status(400).json({ message: "You are not in a group" });
+        const group  = await resolveActiveGroup(user);
 
-        const group = await Group.findById(user.groupId);
-        group.categories.push({ name, icon, type: type || 'expense' });
+        // Names are what transactions reference, and addTransaction validates against this list —
+        // two categories with the same name would make that check ambiguous.
+        if (group.categories.some(c => c.name.trim().toLowerCase() === name.toLowerCase())) {
+            return res.status(400).json({ message: "That category already exists" });
+        }
+
+        group.categories.push({ name, icon, emoji: emoji || "", type: type || 'expense' });
         await group.save();
 
         res.json(group.categories);
@@ -229,9 +236,8 @@ exports.removeCategory = async (req, res) => {
         const { categoryId } = req.params;
         const userId = req.user.id;
         const user   = await User.findById(userId);
-        if (!user.groupId) return res.status(400).json({ message: "You are not in a group" });
+        const group  = await resolveActiveGroup(user);
 
-        const group = await Group.findById(user.groupId);
         group.categories = group.categories.filter(c => c._id.toString() !== categoryId);
         await group.save();
 
@@ -241,17 +247,49 @@ exports.removeCategory = async (req, res) => {
     }
 };
 
+// The catalogue itself is static, but it sits behind auth like the rest of /api/group.
+exports.getCategoryPresets = async (req, res) => {
+    res.json(listPresets());
+};
+
+// Adds a named pack in one call. Idempotent by name, so applying the same preset twice — or two
+// packs that overlap — adds nothing the group already has.
+exports.applyCategoryPreset = async (req, res) => {
+    try {
+        const key    = req.params.key || req.body.preset;
+        const userId = req.user.id;
+        const user   = await User.findById(userId);
+        const group  = await resolveActiveGroup(user);
+
+        const additions = newCategoriesFor(key, group.categories);
+        if (additions === null) return res.status(404).json({ message: "Unknown category preset" });
+
+        if (additions.length) {
+            group.categories.push(...additions);
+            await group.save();
+        }
+
+        res.json({ categories: group.categories, added: additions.length });
+    } catch (error) {
+        res.status(500).json({ message: "Failed to apply category preset" });
+    }
+};
+
 exports.importCategories = async (req, res) => {
     try {
         const { fromGroupId, type } = req.body;
         const userId = req.user.id;
         const user   = await User.findById(userId);
-        if (!user.groupId) return res.status(400).json({ message: "You are not in a group" });
 
         const fromGroup = await Group.findOne({ _id: fromGroupId, members: userId });
         if (!fromGroup) return res.status(403).json({ message: "Access denied to source group" });
 
-        const targetGroup    = await Group.findById(user.groupId);
+        // This is now also how someone carries the categories they built up on their own into a
+        // shared group after joining one — the personal group is a valid source like any other.
+        const targetGroup    = await resolveActiveGroup(user);
+        if (String(targetGroup._id) === String(fromGroup._id)) {
+            return res.status(400).json({ message: "That is the group you are importing into" });
+        }
         const existingNames  = targetGroup.categories.map(c => c.name.toLowerCase());
         const newCategories  = fromGroup.categories.filter(c => {
             const isNew      = !existingNames.includes(c.name.toLowerCase());
@@ -260,7 +298,9 @@ exports.importCategories = async (req, res) => {
             return isNew && typeMatches;
         });
 
-        targetGroup.categories.push(...newCategories.map(c => ({ name: c.name, icon: c.icon, type: c.type || 'expense' })));
+        targetGroup.categories.push(...newCategories.map(c => ({
+            name: c.name, icon: c.icon, emoji: c.emoji || "", type: c.type || 'expense',
+        })));
         await targetGroup.save();
 
         res.json(targetGroup.categories);
@@ -269,35 +309,9 @@ exports.importCategories = async (req, res) => {
     }
 };
 
+// Kept so an older build of the app keeps working: the wedding list is now one preset among
+// several, and this is just that preset under its original route.
 exports.setupWeddingCategories = async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const user   = await User.findById(userId);
-        if (!user.groupId) return res.status(400).json({ message: "You are not in a group" });
-
-        const group = await Group.findById(user.groupId);
-
-        const weddingCategories = [
-            { name: "Catering (Jamvanu)",        icon: "restaurant",      type: "expense" },
-            { name: "Venue (Wadi/Hall)",          icon: "business",        type: "expense" },
-            { name: "Decoration",                 icon: "flower",          type: "expense" },
-            { name: "Clothes",                    icon: "shirt",           type: "expense" },
-            { name: "Jewellery",                  icon: "diamond",         type: "expense" },
-            { name: "Gifts (Kariyavar/Saadu)",    icon: "gift",            type: "expense" },
-            { name: "Music & Band",               icon: "musical-notes",   type: "expense" },
-            { name: "Photography/Video",          icon: "camera",          type: "expense" },
-            { name: "Invitations (Kankotri)",     icon: "mail-open",       type: "expense" },
-            { name: "Transportation",             icon: "bus",             type: "expense" },
-            { name: "Mehendi/Parlour",            icon: "color-palette",   type: "expense" },
-            { name: "Other Wedding Expenses",     icon: "apps",            type: "expense" }
-        ];
-
-        const existingNames = group.categories.map(c => c.name.toLowerCase());
-        group.categories.push(...weddingCategories.filter(c => !existingNames.includes(c.name.toLowerCase())));
-        await group.save();
-
-        res.json(group.categories);
-    } catch (error) {
-        res.status(500).json({ message: "Failed to setup wedding categories" });
-    }
+    req.params.key = "wedding";
+    return exports.applyCategoryPreset(req, res);
 };

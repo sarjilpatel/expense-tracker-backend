@@ -6,8 +6,10 @@
     "test": "node --test \"tests/**/*.test.js\"",
     "start": "node server.js",
     "dev": "nodemon server.js",
+    "seed": "node scripts/seed.js",
     "backup": "node utils/backup.js",
-    "backfill-note-tokens": "node scripts/backfillNoteTokens.js"
+    "backfill-note-tokens": "node scripts/backfillNoteTokens.js",
+    "backfill-personal-groups": "node scripts/backfill-personal-groups.js"
   },
   "keywords": [],
   "author": "",

@@ -11,6 +11,7 @@ const { issueOtp, verifyOtp, TTL_MINUTES } = require("../utils/otp");
 const { consume, clientIp } = require("../utils/rateLimit");
 const { issueTokens, signAccessToken, signRefreshToken } = require("../utils/tokens");
 const { isValidTimeZone } = require("../utils/recurrence");
+const { ensurePersonalGroup } = require("../utils/personalGroup");
 const Otp = require("../models/Otp");
 
 // One place to turn a verifyOtp failure into a response. "Expired" and "exhausted" are worth
@@ -89,6 +90,10 @@ exports.verifySignup = async (req, res) => {
             timezone: timezone || "UTC",
         });
 
+        // Categories live on a group, so an account with none had nowhere to keep them and every
+        // category screen answered 404. Every user owns a personal group from the moment they exist.
+        await ensurePersonalGroup(user);
+
         const userResponse = user.toObject();
         delete userResponse.password;
 
@@ -156,6 +161,10 @@ exports.login = async (req, res) => {
         if (!isMatch) {
             return res.status(400).json({ message: "Invalid credentials" });
         }
+
+        // Heals an account that predates personal groups, so the app has a groupId in hand from the
+        // login response rather than picking one up later off the first /group/details call.
+        await ensurePersonalGroup(user);
 
         const userResponse = user.toObject();
         delete userResponse.password;
@@ -388,6 +397,10 @@ exports.googleAuth = async (req, res) => {
                 Object.assign(user, updates);
             }
         }
+
+        // Both branches: a returning Google account created before personal groups existed needs
+        // one just as much as a new sign-up does.
+        await ensurePersonalGroup(user);
 
         const { token, refreshToken } = issueTokens(user);
 

@@ -264,11 +264,19 @@ test('a missing subject is not treated as one shared bucket', async () => {
  * decides whether User.findOne answers with an account.
  */
 function loadCtrl({ existing = null, limited = false, verify = null, pending = null, mailThrows = false } = {}) {
-  const calls = { issued: [], mailed: [], created: null, updated: null, verified: null };
+  const calls = { issued: [], mailed: [], created: null, updated: null, verified: null, personalGroups: [] };
   const ctrl = loadWithStubs('controllers/authController.js', {
     '../models/User': {
       findOne: async () => existing,
-      create: async (doc) => { calls.created = doc; return { ...doc, _id: 'u1', toObject: () => ({ ...doc, _id: 'u1' }) }; },
+      // toObject reads the live object rather than a snapshot of `doc`: a real Mongoose document
+      // reflects a field set after create, and verifySignup relies on that to return the groupId
+      // ensurePersonalGroup has just assigned.
+      create: async (doc) => {
+        calls.created = doc;
+        const user = { ...doc, _id: 'u1' };
+        user.toObject = () => { const { toObject, ...rest } = user; return rest; };
+        return user;
+      },
       findByIdAndUpdate: async (id, update) => { calls.updated = { id, update }; return existing; },
       updateOne: async () => ({ modifiedCount: 1 }),
     },
@@ -292,6 +300,15 @@ function loadCtrl({ existing = null, limited = false, verify = null, pending = n
       issueTokens: () => ({ token: 't', refreshToken: 'r' }),
       signAccessToken: () => 't',
       signRefreshToken: () => 'r',
+    },
+    // Every account owns a personal group from the moment it exists — categories live on a group,
+    // so a user without one had nowhere to keep them.
+    '../utils/personalGroup': {
+      ensurePersonalGroup: async (user) => {
+        calls.personalGroups.push(user._id);
+        user.groupId = 'pg1';
+        return { _id: 'pg1', isPersonal: true };
+      },
     },
   });
   return { ctrl, calls };
@@ -378,6 +395,8 @@ test('a correct signup code creates the verified account and returns tokens', as
   assert.equal(calls.created.timezone, 'Asia/Kolkata');
   assert.equal(res.body.token, 't');
   assert.equal(res.body.user.password, undefined, 'the hash must not travel back to the client');
+  assert.deepEqual(calls.personalGroups, ['u1'], 'a new account gets its personal group at once');
+  assert.equal(res.body.user.groupId, 'pg1', 'and the app is told about it in the signup response');
 });
 
 test('a wrong signup code creates nothing and reports the attempts left', async () => {

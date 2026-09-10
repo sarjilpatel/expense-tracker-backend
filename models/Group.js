@@ -3,6 +3,10 @@ const mongoose = require("mongoose");
 const categorySchema = new mongoose.Schema({
   name: { type: String, required: true },
   icon: { type: String, default: "grid-outline" },
+  // The app has always sent an emoji when adding a category and this schema has always dropped it,
+  // so a guest who signed in lost the emoji on every one of theirs. Optional: the older rows have
+  // none, and the app falls back to the icon.
+  emoji: { type: String, default: "" },
   type: { type: String, enum: ['income', 'expense', 'both'], default: 'expense' },
   isActive: { type: Boolean, default: true }
 });
@@ -15,6 +19,11 @@ const pendingMemberSchema = new mongoose.Schema({
 const groupSchema = new mongoose.Schema({
   name: String,
   joinCode: String,
+  // Every user owns one personal group — it is where their categories live and what scopes their
+  // transactions when they are not sharing with anyone. It is a real group so that there is one
+  // code path instead of two, but it is not a shareable one: the app hides the join code and the
+  // member list for it, and still offers "create or join a group" to someone who only has this.
+  isPersonal: { type: Boolean, default: false },
   owner: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

@@ -13,6 +13,8 @@ const {
   addCategory,
   removeCategory,
   importCategories,
+  getCategoryPresets,
+  applyCategoryPreset,
   setupWeddingCategories,
 } = require("../controllers/groupController");
 
@@ -31,6 +33,10 @@ router.post("/:groupId/reject/:userId",       auth, rejectJoinRequest);
 router.post("/categories",                    auth, addCategory);
 router.delete("/categories/:categoryId",      auth, removeCategory);
 router.post("/categories/import",             auth, importCategories);
+// Named packs, so a wedding or a trip is one tap instead of twelve.
+router.get( "/categories/presets",            auth, getCategoryPresets);
+router.post("/categories/presets/:key",       auth, applyCategoryPreset);
+// Superseded by the line above; kept so an older build of the app keeps working.
 router.post("/categories/wedding-preset",     auth, setupWeddingCategories);
 
 module.exports = router;
