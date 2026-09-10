@@ -1,8 +1,13 @@
 #!/bin/bash
-# Nightly MongoDB backup to S3
-# Schedule via cron: 0 2 * * * /path/to/backup.sh >> /var/log/backup.log 2>&1
+# Nightly MongoDB backup to S3.
 #
-# Requires: mongodump, awscli, gzip
+# The server schedules this itself at 02:00 (see utils/backup.js) whenever BACKUP_S3_BUCKET is
+# set, so no host crontab entry is needed. Run one on demand with `npm run backup`.
+#
+# Invoking it directly from a shell only works if MONGO_URI and the AWS keys are already exported
+# — they normally live in .env, which only the Node process loads.
+#
+# Requires on the host: mongodump (mongodb-database-tools), the aws CLI, and gzip.
 # Env vars: MONGO_URI, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, BACKUP_S3_BUCKET
 
 set -euo pipefail
@@ -17,6 +22,20 @@ if [ -z "$BUCKET" ]; then
   echo "[backup] ERROR: BACKUP_S3_BUCKET is not set"
   exit 1
 fi
+
+if [ -z "${MONGO_URI:-}" ]; then
+  echo "[backup] ERROR: MONGO_URI is not set"
+  exit 1
+fi
+
+# Fail on the missing tool by name rather than on whatever mongodump's absence looks like three
+# lines down. Neither of these comes from npm install, so a fresh host will be missing both.
+for BIN in mongodump aws gzip; do
+  if ! command -v "$BIN" >/dev/null 2>&1; then
+    echo "[backup] ERROR: '${BIN}' is not installed or not on PATH"
+    exit 1
+  fi
+done
 
 echo "[backup] Starting backup at ${TIMESTAMP}"
 

@@ -1,20 +1,14 @@
 const Transaction = require("../models/Transaction");
 const User = require("../models/User");
 const Group = require("../models/Group");
-const { encryptField, decryptField } = require('../utils/fieldCrypto');
+const Account = require("../models/Account");
+const { encryptField, decryptField, noteTokens, noteSearchToken, isEncryptionEnabled } = require('../utils/fieldCrypto');
+const { computeNextDueDate } = require('../utils/recurrence');
+const { buildScope }         = require('../utils/scope');
 
-// Returns a Mongoose query filter scoped to what the user can see.
-// Group members see all group transactions (excluding others' private ones).
-// Solo users see only their own transactions.
-function buildScope(user) {
-  if (user.groupId) {
-    return {
-      groupId: user.groupId,
-      deletedAt: null,
-      $or: [{ isPrivate: { $ne: true } }, { userId: user._id }],
-    };
-  }
-  return { userId: user._id, deletedAt: null };
+// User input is interpolated into $regex; without this a metacharacter is a 500 at best.
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // @desc    Add a new transaction
@@ -22,7 +16,7 @@ function buildScope(user) {
 // @access  Private
 exports.addTransaction = async (req, res) => {
   try {
-    const { amount, type, category, date, isRecurring, recurrenceFrequency, currency, isPrivate } = req.body;
+    const { amount, type, category, date, isRecurring, recurrenceFrequency, currency, isPrivate, accountId } = req.body;
     const noteRaw = req.body.note ? String(req.body.note).trim().slice(0, 200) : undefined;
     const note    = noteRaw ? encryptField(noteRaw) : noteRaw;
     const userId  = req.user.id;
@@ -45,27 +39,35 @@ exports.addTransaction = async (req, res) => {
       }
     }
 
-    let nextDueDate = null;
-    if (isRecurring && recurrenceFrequency) {
-      const base = date ? new Date(date) : new Date();
-      if (recurrenceFrequency === 'daily')   nextDueDate = new Date(base.setDate(base.getDate() + 1));
-      else if (recurrenceFrequency === 'weekly')  nextDueDate = new Date(base.setDate(base.getDate() + 7));
-      else if (recurrenceFrequency === 'monthly') nextDueDate = new Date(base.setMonth(base.getMonth() + 1));
-    }
+    // An accountId only sticks if the account is the caller's. A well-formed id belonging to
+    // someone else is dropped rather than 400'd — the transaction is still valid, just unfiled.
+    const ownedAccountId = accountId && await Account.exists({ _id: accountId, userId })
+      ? accountId
+      : null;
+
+    // Scheduled in the user's own calendar — `User.timezone` is captured at signup for exactly
+    // this. The base date is the transaction's own, so the series is anchored to it.
+    const nextDueDate = isRecurring
+      ? computeNextDueDate(date ? new Date(date) : new Date(), recurrenceFrequency, { timeZone: user.timezone })
+      : null;
 
     const transaction = await Transaction.create({
       amount,
       type,
       category,
       note,
+      noteTokens: noteTokens(noteRaw),
       userId,
       groupId: user.groupId || null,
       date: date || Date.now(),
       currency: currency || 'INR',
-      isRecurring: !!isRecurring,
-      recurrenceFrequency: isRecurring ? recurrenceFrequency : null,
+      // Recurrence only sticks if the frequency actually resolved to a next due date — otherwise
+      // the row would sit marked recurring with a null nextDueDate and never fire.
+      isRecurring: !!nextDueDate,
+      recurrenceFrequency: nextDueDate ? recurrenceFrequency : null,
       nextDueDate,
       isPrivate: !!isPrivate,
+      accountId: ownedAccountId,
     });
 
     if (user.groupId) {
@@ -110,12 +112,30 @@ exports.getTransactions = async (req, res) => {
     }
 
     if (search && search.trim()) {
-      const term = search.trim();
-      // Override the $or from buildScope when searching by text
-      query.$or = [
-        { note: { $regex: term, $options: 'i' } },
-        { category: { $regex: term, $options: 'i' } },
-      ];
+      // Escape regex metacharacters — the raw term used to go straight into $regex, so a search
+      // for "(" threw a 500 and ".*" scanned every row.
+      const term = escapeRegex(search.trim());
+      const textMatch = [{ category: { $regex: term, $options: 'i' } }];
+
+      // Notes are matched two different ways depending on whether they are encrypted at rest.
+      // With a key set, `{ note: { $regex } }` matches nothing — the stored value is ciphertext —
+      // so the blind index carries the search: whole words only, but index-served, which is what
+      // keeps skip/limit below working on the database rather than in memory.
+      if (isEncryptionEnabled()) {
+        const token = noteSearchToken(search);
+        if (token) textMatch.push({ noteTokens: token });
+      } else {
+        textMatch.push({ note: { $regex: term, $options: 'i' } });
+      }
+      // Both the privacy scope and the text match must hold. Assigning query.$or directly
+      // REPLACED buildScope's privacy $or, so any group member searching saw every other
+      // member's private transactions.
+      if (query.$or) {
+        query.$and = [{ $or: query.$or }, { $or: textMatch }];
+        delete query.$or;
+      } else {
+        query.$or = textMatch;
+      }
     }
 
     const pageNum  = Math.max(1, parseInt(page  || '1',  10));
@@ -333,7 +353,7 @@ exports.getTrend = async (req, res) => {
 // @access  Private
 exports.updateTransaction = async (req, res) => {
   try {
-    const { amount, type, category, date, currency, isPrivate } = req.body;
+    const { amount, type, category, date, currency, isPrivate, isRecurring, recurrenceFrequency, accountId } = req.body;
     const noteRaw = req.body.note !== undefined ? String(req.body.note).trim().slice(0, 200) : undefined;
     const note    = noteRaw !== undefined ? encryptField(noteRaw) : undefined;
     const userId  = req.user.id;
@@ -365,10 +385,42 @@ exports.updateTransaction = async (req, res) => {
     if (amount !== undefined) updatedFields.amount = amount;
     if (type)     updatedFields.type     = type;
     if (category) updatedFields.category = category;
-    if (note !== undefined) updatedFields.note = note;
+    if (note !== undefined) {
+      updatedFields.note = note;
+      // The index is derived from the note, so it has to be rewritten with it — leaving the old
+      // tokens behind would keep the transaction findable by words it no longer contains.
+      updatedFields.noteTokens = noteTokens(noteRaw);
+    }
     if (date)     updatedFields.date     = date;
     if (currency) updatedFields.currency = currency;
     if (isPrivate !== undefined) updatedFields.isPrivate = !!isPrivate;
+
+    // An explicit null or "" clears the account; anything else must be an account the caller owns.
+    if (accountId !== undefined) {
+      updatedFields.accountId = accountId && await Account.exists({ _id: accountId, userId })
+        ? accountId
+        : null;
+    }
+
+    // Recurrence was previously unreachable from here, which — combined with delete being a soft
+    // delete the cron ignored — meant a recurring transaction could never be stopped.
+    if (isRecurring !== undefined || recurrenceFrequency !== undefined) {
+      const wantsRecurring = isRecurring !== undefined ? !!isRecurring : transaction.isRecurring;
+      const frequency      = recurrenceFrequency !== undefined
+        ? recurrenceFrequency
+        : transaction.recurrenceFrequency;
+
+      // Reschedule from the transaction's own date so editing an unrelated field doesn't shift
+      // the next occurrence.
+      const base    = date ? new Date(date) : new Date(transaction.date);
+      const nextDue = wantsRecurring
+        ? computeNextDueDate(base, frequency, { timeZone: user.timezone })
+        : null;
+
+      updatedFields.isRecurring         = !!nextDue;
+      updatedFields.recurrenceFrequency = nextDue ? frequency : null;
+      updatedFields.nextDueDate         = nextDue;
+    }
 
     const updated = await Transaction.findByIdAndUpdate(
       req.params.id,
@@ -566,6 +618,16 @@ exports.importTransactions = async (req, res) => {
       return res.status(400).json({ msg: 'Maximum 500 transactions per import' });
     }
 
+    // Imported rows must carry the user's groupId — buildScope() filters group members by it,
+    // so rows left with the schema default of null are invisible to anyone in a group.
+    const user = await User.findById(userId).select('groupId').lean();
+    if (!user) return res.status(401).json({ msg: 'Unauthorized' });
+
+    // One lookup for the whole batch rather than a per-row ownership query.
+    const ownedAccountIds = new Set(
+      (await Account.find({ userId }, { _id: 1 }).lean()).map(a => a._id.toString())
+    );
+
     const docs = transactions
       .filter(t => Number(t.amount) > 0)
       .map(t => {
@@ -575,10 +637,15 @@ exports.importTransactions = async (req, res) => {
           type:     VALID_TYPES.has(t.type) ? t.type : 'expense',
           category: String(t.category || 'Other').slice(0, 50),
           note:     noteRaw ? encryptField(noteRaw) : undefined,
+          noteTokens: noteTokens(noteRaw),
           userId,
+          groupId:  user.groupId || null,
           date:     t.date ? new Date(t.date) : new Date(),
           currency: VALID_CURRENCIES.has(t.currency) ? t.currency : 'INR',
           isPrivate: !!t.isPrivate,
+          // syncService rewrites guest account ids to server ids before calling this, so the
+          // transaction→account links a guest built up survive the move to an account.
+          accountId: ownedAccountIds.has(String(t.accountId)) ? t.accountId : null,
         };
       });
 
@@ -586,8 +653,18 @@ exports.importTransactions = async (req, res) => {
       return res.status(400).json({ msg: 'No valid transactions found' });
     }
 
-    const created = await Transaction.insertMany(docs, { ordered: false });
-    res.status(201).json({ imported: created.length });
+    // ordered:false keeps going past a bad row, but then throws with the successes recorded
+    // on the error — report the real count either way so the client never over-reports.
+    let imported;
+    try {
+      const created = await Transaction.insertMany(docs, { ordered: false });
+      imported = created.length;
+    } catch (bulkError) {
+      imported = bulkError?.result?.insertedCount ?? bulkError?.insertedDocs?.length ?? 0;
+      if (imported === 0) throw bulkError;
+    }
+
+    res.status(201).json({ imported, received: docs.length });
   } catch (error) {
     console.error('Import error:', error);
     res.status(500).json({ msg: 'Server Error' });

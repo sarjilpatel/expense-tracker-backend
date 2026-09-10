@@ -1,44 +1,44 @@
-# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+# Node / Express backend.
+#
+# This file used to be the Expo template, copied from the app repo — it ignored `/android`, `/ios`,
+# `web-build/` and `.expo/`, none of which this repo has ever produced. It did cover `.env` and
+# `node_modules/`, so nothing was ever at risk; it just described a different project.
 
 # dependencies
 node_modules/
 
-# Expo
-.expo/
-dist/
-web-build/
-expo-env.d.ts
-
-# Native
-.kotlin/
-*.orig.*
-*.jks
-*.p8
-*.p12
-*.key
-*.mobileprovision
-
-# Metro
-.metro-health-check*
-
-# debug
-npm-debug.*
-yarn-debug.*
-yarn-error.*
-
-# macOS
-.DS_Store
-*.pem
-
-# local env files
-.env*.local
+# environment — never commit real secrets. `.env.example` is the tracked template and must not be
+# caught by these; when adding a variable, add it there with a placeholder too.
 .env
+.env.*
+!.env.example
 
-# typescript
-*.tsbuildinfo
+# credentials and certificates
+*.pem
+*.key
+*.p12
+*.pfx
 
-app-example
+# logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# generated native folders
-/ios
-/android
+# test and coverage output
+coverage/
+.nyc_output/
+
+# local backup artefacts, if BACKUP_DIR is ever pointed inside the repo instead of /tmp
+mongo_backup_*/
+*.tar.gz
+
+# editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

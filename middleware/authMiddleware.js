@@ -17,7 +17,13 @@ const authMiddleware = (req, res, next) => {
         req.user = decoded;
         next();
     } catch (error) {
-        console.error("JWT Verification Error:", error.message);
+        // An expired token is the ordinary end of a one-hour session: every active client produces
+        // one every hour, and logging that in production buries everything else. A malformed or
+        // wrongly-signed token is not routine — that is someone tampering — so it keeps its line.
+        // The token itself is never logged either way; it is a live credential until it expires.
+        if (error.name !== "TokenExpiredError" || process.env.NODE_ENV !== "production") {
+            console.warn(`[auth] ${error.name} on ${req.method} ${req.originalUrl}`);
+        }
         return res.status(401).json({ msg: "Invalid or expired token" });
     }
 };
