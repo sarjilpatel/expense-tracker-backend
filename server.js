@@ -39,7 +39,7 @@ const groupRoutes       = require("./routes/groupRoutes");
 const transactionRoutes = require("./routes/transactionRoutes");
 const budgetRoutes      = require("./routes/budgetRoutes");
 const goalRoutes        = require("./routes/goalRoutes");
-const splitRoutes       = require("./routes/splitRoutes");
+const tripRoutes        = require("./routes/tripRoutes");
 const userRoutes        = require("./routes/userRoutes");
 const accountRoutes     = require("./routes/accountRoutes");
 
@@ -89,7 +89,7 @@ app.use("/api/group",        groupRoutes);
 app.use("/api/transactions", transactionRoutes);
 app.use("/api/budgets",      budgetRoutes);
 app.use("/api/goals",        goalRoutes);
-app.use("/api/splits",       splitRoutes);
+app.use("/api/trips",        tripRoutes);
 app.use("/api/user",         userRoutes);
 app.use("/api/accounts",     accountRoutes);
 

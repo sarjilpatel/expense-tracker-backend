@@ -1,7 +1,7 @@
-// W1-27 regression: the two account-deletion paths disagreed about who owns a split.
+// W1-27 regression: the two account-deletion paths disagreed about who owns a shared bill.
 //
-// The nightly purge cron had it right — pull the departing user out of splits others own, delete
-// only the splits they paid for. `authController.deleteAllData`, the immediate "Full Reset"
+// The nightly purge cron had it right — detach the departing user from records others own, delete
+// only the ones they own themselves. `authController.deleteAllData`, the immediate "Full Reset"
 // endpoint, instead ran:
 //
 //     Split.deleteMany({ $or: [{ paidBy: userId }, { 'splits.userId': userId }] })
@@ -9,6 +9,11 @@
 // so one member resetting their own account destroyed every split they had merely *participated*
 // in — records belonging to whoever paid, which the rest of the group still needed to settle
 // against. Nothing warned anyone; the debts simply vanished from other people's screens.
+//
+// Splits became trips in W2-28 and the rule survived the model change, but the *shape* of the
+// detach did not: a trip member carries their own name and may have no account at all, so losing
+// the account costs the link and nothing else. Pulling the member out of the trip would silently
+// rewrite every remaining balance, which is the same class of damage the original bug did.
 //
 // Both callers now share `utils/purgeUser.js`. These tests run the real helper, and the controller
 // test runs the real controller through it, because the bug was never in the helper — it was in
@@ -39,7 +44,7 @@ function recorder({ user } = {}) {
     '../models/Goal':        model('Goal'),
     '../models/Account':     model('Account'),
     '../models/Budget':      model('Budget'),
-    '../models/Split':       model('Split'),
+    '../models/Trip':        model('Trip'),
     '../models/Group':       model('Group'),
   };
 
@@ -75,43 +80,57 @@ async function runEndpoint(user) {
 
 // ── The bug ───────────────────────────────────────────────────────────────────
 
-test('a split the user only participated in is edited, not deleted', async () => {
-  // The whole point of this file. Deleting it takes the payer's record with it.
+test('a trip the user is only a member of is edited, not deleted', async () => {
+  // The whole point of this file. Deleting it takes the owner's record with it.
   const { call } = await runPurge(member);
 
-  const pull = call('Split', 'updateMany');
-  assert.ok(pull, 'the user must be pulled out of splits they owe on');
-  assert.deepEqual(pull.args[0], { 'splits.userId': 'u1' });
-  assert.deepEqual(pull.args[1], { $pull: { splits: { userId: 'u1' } } });
+  const unlink = call('Trip', 'updateMany');
+  assert.ok(unlink, 'the user must be detached from trips they are a member of');
+  assert.deepEqual(unlink.args[0], { 'members.userId': 'u1' });
+  assert.deepEqual(unlink.args[1], { $set: { 'members.$[m].userId': null } });
+  assert.deepEqual(unlink.args[2], { arrayFilters: [{ 'm.userId': 'u1' }] });
 });
 
-test('only splits the user paid for are deleted', async () => {
-  const { call } = await runPurge(member);
-
-  const del = call('Split', 'deleteMany');
-  assert.ok(del, 'splits the user owns must still go');
-  assert.deepEqual(del.args[0], { paidBy: 'u1' },
-    'anything wider than paidBy destroys another member\'s record');
-});
-
-test('no split delete matches on participation', async () => {
-  // The exact shape of the old bug: `$or: [{ paidBy }, { "splits.userId" }]`.
+test('the member survives the account, under their own name', async () => {
+  // A $pull here would be the W1-27 bug wearing the new model's clothes: the expenses that member
+  // paid for or shared would lose their payer and their participants, and every other balance in
+  // the trip would change without anyone having touched it.
   const { all } = await runPurge(member);
 
-  for (const c of all('Split').filter((x) => x.op === 'deleteMany')) {
-    const q = JSON.stringify(c.args[0]);
-    assert.equal(q.includes('splits.userId'), false,
-      `a participation-matching delete is the W1-27 bug: ${q}`);
-    assert.equal(q.includes('$or'), false, `unexpected $or in a split delete: ${q}`);
+  for (const c of all('Trip').filter((x) => x.op === 'updateMany')) {
+    const update = JSON.stringify(c.args[1]);
+    assert.equal(update.includes('$pull'), false,
+      `removing the member rewrites every other balance in the trip: ${update}`);
   }
 });
 
-test('the Full Reset endpoint deletes splits the same way the cron does', async () => {
+test('only trips the user owns are deleted', async () => {
+  const { call } = await runPurge(member);
+
+  const del = call('Trip', 'deleteMany');
+  assert.ok(del, 'trips the user owns must still go');
+  assert.deepEqual(del.args[0], { ownerId: 'u1' },
+    'anything wider than ownerId destroys another member\'s record');
+});
+
+test('no trip delete matches on membership', async () => {
+  // The exact shape of the old bug: `$or: [{ paidBy }, { "splits.userId" }]`.
+  const { all } = await runPurge(member);
+
+  for (const c of all('Trip').filter((x) => x.op === 'deleteMany')) {
+    const q = JSON.stringify(c.args[0]);
+    assert.equal(q.includes('members.userId'), false,
+      `a membership-matching delete is the W1-27 bug: ${q}`);
+    assert.equal(q.includes('$or'), false, `unexpected $or in a trip delete: ${q}`);
+  }
+});
+
+test('the Full Reset endpoint clears trips the same way the cron does', async () => {
   // The bug lived here, not in the cron, and this is the path a user triggers by hand.
   const { call, res } = await runEndpoint(member);
 
-  assert.deepEqual(call('Split', 'updateMany').args[0], { 'splits.userId': 'u1' });
-  assert.deepEqual(call('Split', 'deleteMany').args[0], { paidBy: 'u1' });
+  assert.deepEqual(call('Trip', 'updateMany').args[0], { 'members.userId': 'u1' });
+  assert.deepEqual(call('Trip', 'deleteMany').args[0], { ownerId: 'u1' });
   assert.equal(res.statusCode, null, 'a successful reset answers 200 via res.json');
   assert.deepEqual(res.body, { message: 'All data deleted successfully' });
 });

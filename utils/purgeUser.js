@@ -9,7 +9,8 @@
 //     every solo user's budgets in the database;
 //   * split ownership (W1-27): `deleteAllData` deleted every split the user merely *participated*
 //     in, destroying records that belong to whoever paid and that the rest of the group still
-//     needs to settle against.
+//     needs to settle against. Splits became trips in W2-28 and the same rule carries over — see
+//     the note on the trip deletes below.
 //
 // Both were the same class of bug — a delete scoped to the wrong owner — and both were only ever
 // wrong in one of the two copies. A third caller is plausible (an admin tool, a GDPR request), so
@@ -18,7 +19,7 @@
 const Transaction = require("../models/Transaction");
 const User        = require("../models/User");
 const Goal        = require("../models/Goal");
-const Split       = require("../models/Split");
+const Trip        = require("../models/Trip");
 const Budget      = require("../models/Budget");
 const Group       = require("../models/Group");
 const Account     = require("../models/Account");
@@ -26,9 +27,9 @@ const Account     = require("../models/Account");
 /**
  * Deletes a user and every record that belongs to them alone.
  *
- * Splits are the one collection where "belongs to" is not simply `userId`: a split is owned by the
- * member who paid, and everyone else in it is a participant on someone else's record. So the user
- * is *pulled out of* splits others own, and only splits they paid for are deleted.
+ * Trips are the one collection where "belongs to" is not simply `userId`: a trip is owned by the
+ * member who created it, and everyone else in it is a member of someone else's record. So the user
+ * is *detached from* trips others own, and only trips they own are deleted.
  *
  * @param {object} user A loaded User document (needs `_id` and `groupId`).
  */
@@ -41,10 +42,16 @@ async function purgeUser(user) {
   // Scope by userId, never groupId — see the W1-07 note above.
   await Budget.deleteMany({ userId });
 
-  // Two steps, and the order does not matter: a split the user both paid for and appears in is
-  // deleted outright by the second call regardless of the first having emptied their entry.
-  await Split.updateMany({ "splits.userId": userId }, { $pull: { splits: { userId } } });
-  await Split.deleteMany({ paidBy: userId });
+  // Two steps, and the order does not matter: a trip the user both owns and appears in is deleted
+  // outright by the second call regardless of the first having unlinked their membership.
+  //
+  // The first is an unlink, not a removal. A trip member carries a `name` of their own and can
+  // exist with no account at all, so dropping the account only costs the link — the person stays in
+  // the trip under their name, and every expense they paid for or shared keeps its payer and its
+  // participants. Pulling the member out instead would silently rewrite everyone else's balances.
+  await Trip.updateMany({ "members.userId": userId }, { $set: { "members.$[m].userId": null } },
+                        { arrayFilters: [{ "m.userId": userId }] });
+  await Trip.deleteMany({ ownerId: userId });
 
   if (user.groupId) {
     await Group.updateOne({ _id: user.groupId }, { $pull: { members: userId } });

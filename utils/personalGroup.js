@@ -49,7 +49,7 @@ async function ensurePersonalGroup(user, { setActive = true } = {}) {
         // disappears from the app the first time they log in. Doing it here rather than only in the
         // migration script is what makes the lazy heal on login safe to run at all.
         //
-        // Budgets and accounts are userId-scoped and need nothing. Splits already require a group.
+        // Budgets and accounts are userId-scoped and need nothing. Trips already require a group.
         await Promise.all([
             Transaction.updateMany({ userId: user._id, groupId: null }, { groupId: group._id }),
             Goal.updateMany({ userId: user._id, groupId: null }, { groupId: group._id }),

@@ -35,7 +35,7 @@ async function runPurge(users, nowIso = '2026-09-10T00:05:00Z') {
     './models/Goal':        model('Goal'),
     './models/Account':     model('Account'),
     './models/Budget':      model('Budget'),
-    './models/Split':       model('Split'),
+    './models/Trip':        model('Trip'),
     './models/Group':       model('Group'),
   };
 
@@ -99,15 +99,15 @@ test('the owned collections are all scoped to the departing user', async () => {
   }
 });
 
-test('the user is removed from splits they owe on, and their own splits deleted', async () => {
+test('the user is unlinked from trips they belong to, and their own trips deleted', async () => {
   const { call } = await runPurge([member]);
 
-  const pull = call('Split', 'updateMany');
-  assert.deepEqual(pull.args[0], { 'splits.userId': 'u1' });
-  assert.deepEqual(pull.args[1], { $pull: { splits: { userId: 'u1' } } });
+  const unlink = call('Trip', 'updateMany');
+  assert.deepEqual(unlink.args[0], { 'members.userId': 'u1' });
+  assert.deepEqual(unlink.args[1], { $set: { 'members.$[m].userId': null } });
 
-  const del = call('Split', 'deleteMany');
-  assert.deepEqual(del.args[0], { paidBy: 'u1' });
+  const del = call('Trip', 'deleteMany');
+  assert.deepEqual(del.args[0], { ownerId: 'u1' });
 });
 
 test('a group member is pulled out of the group members array', async () => {

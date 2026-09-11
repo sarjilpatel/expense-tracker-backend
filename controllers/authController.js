@@ -420,9 +420,9 @@ exports.deleteAllData = async (req, res) => {
         const user   = await User.findById(userId);
         if (!user) return res.status(404).json({ message: 'User not found' });
 
-        // Shared with the nightly purge cron. This used to delete every split the user merely
-        // participated in, which destroyed other members' records; `purgeUser` pulls them out of
-        // those and deletes only the ones they paid for.
+        // Shared with the nightly purge cron. This used to delete every shared bill the user
+        // merely took part in, which destroyed other members' records; `purgeUser` detaches them
+        // from those and deletes only the ones they own.
         await purgeUser(user);
 
         res.json({ message: 'All data deleted successfully' });

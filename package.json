@@ -9,7 +9,8 @@
     "seed": "node scripts/seed.js",
     "backup": "node utils/backup.js",
     "backfill-note-tokens": "node scripts/backfillNoteTokens.js",
-    "backfill-personal-groups": "node scripts/backfill-personal-groups.js"
+    "backfill-personal-groups": "node scripts/backfill-personal-groups.js",
+    "migrate-splits-to-trips": "node scripts/migrateSplitsToTrips.js"
   },
   "keywords": [],
   "author": "",

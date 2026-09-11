@@ -23,7 +23,7 @@ const Account     = require("../models/Account");
 const Transaction = require("../models/Transaction");
 const Budget      = require("../models/Budget");
 const Goal        = require("../models/Goal");
-const Split       = require("../models/Split");
+const Trip        = require("../models/Trip");
 const Otp         = require("../models/Otp");
 const RateLimit   = require("../models/RateLimit");
 
@@ -129,11 +129,11 @@ async function clearSeed() {
 
   if (!userIds.length && !groupIds.length) return { users: 0 };
 
-  const [txs, budgets, goals, splits, accounts] = await Promise.all([
+  const [txs, budgets, goals, trips, accounts] = await Promise.all([
     Transaction.deleteMany({ userId: { $in: userIds } }),
     Budget.deleteMany({ userId: { $in: userIds } }),
     Goal.deleteMany({ userId: { $in: userIds } }),
-    Split.deleteMany({ groupId: { $in: groupIds } }),
+    Trip.deleteMany({ groupId: { $in: groupIds } }),
     Account.deleteMany({ userId: { $in: userIds } }),
   ]);
   await Group.deleteMany({ _id: { $in: groupIds } });
@@ -146,12 +146,12 @@ async function clearSeed() {
   return {
     users: userIds.length, groups: groupIds.length,
     transactions: txs.deletedCount, budgets: budgets.deletedCount,
-    goals: goals.deletedCount, splits: splits.deletedCount, accounts: accounts.deletedCount,
+    goals: goals.deletedCount, trips: trips.deletedCount, accounts: accounts.deletedCount,
   };
 }
 
 async function wipeEverything() {
-  for (const M of [Transaction, Budget, Goal, Split, Account, Group, User, Otp, RateLimit]) {
+  for (const M of [Transaction, Budget, Goal, Trip, Account, Group, User, Otp, RateLimit]) {
     await M.deleteMany({});
   }
 }
@@ -319,30 +319,38 @@ async function seed() {
     { userId: carol._id, groupId: personal[carol.email]._id, name: "Camera", targetAmount: 85000, savedAmount: 15000, deadline: null,                          icon: "camera-outline",   color: "#EC4899" },
   ]);
 
-  // ── splits ────────────────────────────────────────────────────────────────
-  // One of each state the settlement screen renders: nothing settled, half settled, fully settled
-  // — and paid by both members, since only the payer may mark an entry paid (W1-13) and undoing
-  // one is W1-29.
-  await Split.create([
-    {
-      groupId: group._id, paidBy: alice._id, title: "Dinner at Toit", totalAmount: 3600, currency: "INR",
-      splits: [{ userId: alice._id, amount: 1800, settled: true, settledAt: new Date() },
-               { userId: bob._id,   amount: 1800, settled: false }],
-      createdAt: dayIn(monthStart(0), 4, 20),
-    },
-    {
-      groupId: group._id, paidBy: bob._id, title: "Weekend groceries", totalAmount: 5200, currency: "INR",
-      splits: [{ userId: bob._id,   amount: 2600, settled: true, settledAt: new Date() },
-               { userId: alice._id, amount: 2600, settled: false }],
-      createdAt: dayIn(monthStart(0), 9, 11),
-    },
-    {
-      groupId: group._id, paidBy: alice._id, title: "Airport cab", totalAmount: 1400, currency: "INR",
-      splits: [{ userId: alice._id, amount: 700, settled: true, settledAt: new Date() },
-               { userId: bob._id,   amount: 700, settled: true, settledAt: new Date() }],
-      createdAt: dayIn(monthStart(1), 18, 6),
-    },
-  ]);
+  // ── trips ─────────────────────────────────────────────────────────────────
+  // One trip covering every shape the settlement screen has to render: an even split across
+  // everyone, one across a subset, an uneven one carrying explicit `sharesMinor`, and a payment
+  // already recorded so a cleared balance is on screen too. Priya has no account — the ad-hoc
+  // member is the whole reason this model replaced splits, so the seed has to exercise it.
+  //
+  // Ids are fixed strings rather than UUIDs: re-seeding reproduces the same rows, which is the
+  // point of the fixed PRNG seed everywhere else in this script.
+  await Trip.create({
+    groupId: group._id, ownerId: alice._id, name: "Goa weekend", currency: "INR",
+    members: [
+      { id: "m-alice", name: "Alice", userId: alice._id },
+      { id: "m-bob",   name: "Bob",   userId: bob._id },
+      { id: "m-priya", name: "Priya", userId: null },
+    ],
+    expenses: [
+      { id: "e-dinner", description: "Dinner at Toit", amountMinor: 360000, paidById: "m-alice",
+        participantIds: ["m-alice", "m-bob", "m-priya"], createdAt: dayIn(monthStart(0), 4, 20) },
+      { id: "e-grocery", description: "Weekend groceries", amountMinor: 520000, paidById: "m-bob",
+        participantIds: ["m-alice", "m-bob"], createdAt: dayIn(monthStart(0), 9, 11) },
+      // Uneven: Priya took the long leg on her own, so the shares are stated rather than derived.
+      { id: "e-cab", description: "Airport cab", amountMinor: 140000, paidById: "m-alice",
+        participantIds: ["m-alice", "m-bob", "m-priya"],
+        sharesMinor: { "m-alice": 40000, "m-bob": 40000, "m-priya": 60000 },
+        createdAt: dayIn(monthStart(1), 18, 6) },
+    ],
+    settlements: [
+      { id: "s-bob-alice", fromId: "m-bob", toId: "m-alice", amountMinor: 100000,
+        settledAt: dayIn(monthStart(0), 12, 9), recordedBy: alice._id },
+    ],
+    createdAt: dayIn(monthStart(1), 18, 5),
+  });
 
   return { group, transactions: rows.length, accounts: accounts.length, dave };
 }
@@ -370,7 +378,7 @@ async function main() {
     if (gone.users) {
       console.log(`removed previous seed: ${gone.users} users, ${gone.transactions} transactions, ` +
                   `${gone.accounts} accounts, ${gone.budgets} budgets, ${gone.goals} goals, ` +
-                  `${gone.splits} splits`);
+                  `${gone.trips} trips`);
     }
   }
 
@@ -382,7 +390,7 @@ async function main() {
   console.log(`  password for every account: ${PASSWORD}`);
   console.log(`  alice@${DOMAIN}   owner of "${out.group.name}" — join code ${JOINCODE}`);
   console.log(`  bob@${DOMAIN}     group member`);
-  console.log(`  carol@${DOMAIN}   personal group only — no shared rows, no splits`);
+  console.log(`  carol@${DOMAIN}   personal group only — no shared rows, no trips`);
   console.log(`  dave@${DOMAIN}    join request pending Alice's approval`);
   console.log("");
   console.log("  note search terms: coffee, uber, grocery, rent, salary");
