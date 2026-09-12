@@ -53,9 +53,13 @@ async function purgeUser(user) {
                         { arrayFilters: [{ "m.userId": userId }] });
   await Trip.deleteMany({ ownerId: userId });
 
-  if (user.groupId) {
-    await Group.updateOne({ _id: user.groupId }, { $pull: { members: userId } });
-  }
+  // Out of every group they belong to, not just the active one — a user can hold membership in
+  // several (personal plus any number of shared) and only `groupId` names the current one.
+  await Group.updateMany({ members: userId }, { $pull: { members: userId } });
+  // Their personal group goes with them. It is theirs alone by construction (W1-33: no join code,
+  // sole member), so nothing else can reference it once they are gone — leaving it behind is an
+  // orphan per deleted account, forever.
+  await Group.deleteMany({ owner: userId, isPersonal: true });
 
   await User.findByIdAndDelete(userId);
 }

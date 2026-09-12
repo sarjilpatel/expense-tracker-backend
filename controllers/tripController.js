@@ -14,6 +14,7 @@
 const crypto = require('crypto');
 const Trip   = require('../models/Trip');
 const User   = require('../models/User');
+const Group  = require('../models/Group');
 
 const populate = [
   { path: 'ownerId',        select: 'name profilePhoto' },
@@ -51,6 +52,17 @@ async function loadTrip(req, res) {
  */
 function ownsTrip(trip, req) {
   return trip.ownerId.toString() === req.user.id.toString();
+}
+
+/**
+ * Whether `userId` may be linked to a member of a trip in `groupId`. A member's `userId` is what
+ * lets that person act on the trip and what the response populates a name and photo from, so it
+ * has to name someone in the caller's own group — not any id the client cares to send.
+ */
+async function isGroupMember(groupId, userId) {
+  if (!userId) return true;
+  const group = await Group.findById(groupId, { members: 1 }).lean();
+  return !!group?.members.some(m => m.toString() === userId.toString());
 }
 
 const emit = (req, trip, event, payload) => {
@@ -98,13 +110,27 @@ exports.createTrip = async (req, res) => {
 
   // The creator is always a member: the app states every balance relative to them, and a trip whose
   // owner is not in it can neither pay for anything nor be owed anything.
+  //
+  // If the client already names a member as the creator — a guest trip being synced sends its
+  // self-member with the account's id — that member is kept, id and all, and takes the account's
+  // name. Seeding a second one beside it would leave a zero-balance "you" next to the one holding
+  // every real debt, and removing the wrong duplicate cascades through the expenses it paid for.
   const supplied = Array.isArray(members) ? members : [];
+  const isMe     = m => m?.userId && m.userId.toString() === user._id.toString();
+  const selfIn   = supplied.find(isMe);
+  const others   = supplied
+    .filter(m => m?.name && String(m.name).trim() && !isMe(m))
+    .map(m => ({ id: m.id || genId(), name: String(m.name).trim().slice(0, 60), userId: m.userId || null }));
+
+  for (const m of others) {
+    if (!(await isGroupMember(user.groupId, m.userId))) {
+      return res.status(400).json({ message: 'A member is linked to someone outside your group' });
+    }
+  }
+
   const seed = [
-    { id: genId(), name: user.name, userId: user._id },
-    ...supplied
-      .filter(m => m?.name && String(m.name).trim())
-      .filter(m => !m.userId || m.userId.toString() !== user._id.toString())
-      .map(m => ({ id: m.id || genId(), name: String(m.name).trim().slice(0, 60), userId: m.userId || null })),
+    { id: selfIn?.id || genId(), name: user.name, userId: user._id },
+    ...others,
   ];
 
   const trip = await Trip.create({
@@ -158,6 +184,9 @@ exports.addMember = async (req, res) => {
   if (!name || !String(name).trim()) return res.status(400).json({ message: 'Member name is required' });
   if (userId && trip.members.some(m => m.userId?.toString() === userId.toString())) {
     return res.status(400).json({ message: 'That person is already in this trip' });
+  }
+  if (!(await isGroupMember(trip.groupId, userId))) {
+    return res.status(400).json({ message: 'That person is not in your group' });
   }
 
   trip.members.push({ id: genId(), name: String(name).trim().slice(0, 60), userId: userId || null });
@@ -333,6 +362,20 @@ exports.deleteExpense = async (req, res) => {
 /* ------------------------------------------------------------ settlements */
 
 /**
+ * Who may confirm — or un-confirm — that `to` was paid.
+ *
+ * The recipient, when they have an account: only the person owed can say they were paid back
+ * (W1-13). The owner only when the recipient has no account and so has no way to confirm anything
+ * themselves. An owner confirming on behalf of a member who *does* have an account would clear
+ * that member's credit without their say, which is the hole W1-13 closed.
+ */
+function mayConfirm(trip, to, req) {
+  const callerId = req.user.id.toString();
+  if (to?.userId) return to.userId.toString() === callerId;
+  return ownsTrip(trip, req);
+}
+
+/**
  * Records a payment one member actually made to another.
  *
  * Who may do this is the one place the trip rules differ from owner-only, and it is W1-27's
@@ -358,8 +401,7 @@ exports.addSettlement = async (req, res) => {
     return res.status(400).json({ message: 'Amount must be a positive whole number of minor units' });
   }
 
-  const isRecipient = to.userId && to.userId.toString() === req.user.id.toString();
-  if (!isRecipient && !ownsTrip(trip, req)) {
+  if (!mayConfirm(trip, to, req)) {
     return res.status(403).json({ message: 'Only the person who was paid can confirm this' });
   }
 
@@ -383,8 +425,7 @@ exports.deleteSettlement = async (req, res) => {
   if (!entry) return res.status(404).json({ message: 'Payment not found' });
 
   const to = trip.members.find(m => m.id === entry.toId);
-  const isRecipient = to?.userId && to.userId.toString() === req.user.id.toString();
-  if (!isRecipient && !ownsTrip(trip, req)) {
+  if (!mayConfirm(trip, to, req)) {
     return res.status(403).json({ message: 'Only the person who was paid can undo this' });
   }
 

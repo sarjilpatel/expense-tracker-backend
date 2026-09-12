@@ -110,17 +110,21 @@ test('the user is unlinked from trips they belong to, and their own trips delete
   assert.deepEqual(del.args[0], { ownerId: 'u1' });
 });
 
-test('a group member is pulled out of the group members array', async () => {
+test('a departing user is pulled out of every group and their personal group is deleted', async () => {
   const { call } = await runPurge([member]);
-  const group = call('Group', 'updateOne');
 
-  assert.deepEqual(group.args[0], { _id: 'g1' });
-  assert.deepEqual(group.args[1], { $pull: { members: 'u1' } });
+  const pull = call('Group', 'updateMany');
+  assert.deepEqual(pull.args[0], { members: 'u1' });
+  assert.deepEqual(pull.args[1], { $pull: { members: 'u1' } });
+
+  const del = call('Group', 'deleteMany');
+  assert.deepEqual(del.args[0], { owner: 'u1', isPersonal: true });
 });
 
-test('a solo user touches no group document at all', async () => {
+test('a solo user writes no null group id', async () => {
   const { all } = await runPurge([solo]);
-  assert.equal(all('Group').length, 0, 'there is no group to update, and no null id to write to');
+  assert.ok(all('Group').every(c => !JSON.stringify(c.args).includes('null')),
+    'no group query may carry a null id');
 });
 
 test('the user record itself is deleted last', async () => {

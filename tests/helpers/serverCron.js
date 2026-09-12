@@ -34,11 +34,11 @@ function loadServerCrons(models = {}, { backup } = {}) {
     dotenv: { config: () => ({ parsed: {} }) },
     './config/db': () => {},
     './models/Transaction': noop, './models/User': noop, './models/Goal': noop,
-    './models/Split': noop, './models/Budget': noop, './models/Group': noop,
+    './models/Trip': noop, './models/Budget': noop, './models/Group': noop,
     './models/Account': noop,
     './routes/authRoutes': express.Router(),   './routes/groupRoutes': express.Router(),
     './routes/transactionRoutes': express.Router(), './routes/budgetRoutes': express.Router(),
-    './routes/goalRoutes': express.Router(),   './routes/splitRoutes': express.Router(),
+    './routes/goalRoutes': express.Router(),   './routes/tripRoutes': express.Router(),
     './routes/userRoutes': express.Router(),   './routes/accountRoutes': express.Router(),
     'node-cron': { schedule: (expr, fn) => { jobs.push({ expr, fn }); return { stop() {} }; } },
     'socket.io': {

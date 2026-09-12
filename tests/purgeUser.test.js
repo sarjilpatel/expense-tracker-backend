@@ -158,19 +158,33 @@ test('budgets are deleted by userId, never by groupId', async () => {
     'a null groupId matches every solo user\'s budgets in the database');
 });
 
-test('a group member is pulled out of the group members array', async () => {
+test('a departing user is pulled out of every group they belong to', async () => {
+  // Every group, not just `groupId` — a user holds membership in their personal group and any
+  // number of shared ones, and only the active one is named on the user row.
   const { call } = await runPurge(member);
 
-  const c = call('Group', 'updateOne');
-  assert.ok(c, 'a departing member must leave the group');
-  assert.deepEqual(c.args[0], { _id: 'g1' });
+  const c = call('Group', 'updateMany');
+  assert.ok(c, 'a departing member must leave their groups');
+  assert.deepEqual(c.args[0], { members: 'u1' });
   assert.deepEqual(c.args[1], { $pull: { members: 'u1' } });
 });
 
-test('a solo user touches no group at all', async () => {
-  const { call } = await runPurge(solo);
+test('their personal group is deleted with them', async () => {
+  // Every account owns one (W1-33). It has no join code and no other member, so once the owner is
+  // gone nothing can ever reach it — leaving it is an orphan per deleted account, forever.
+  const { call } = await runPurge(member);
+
+  const c = call('Group', 'deleteMany');
+  assert.ok(c, 'the personal group must not be left behind');
+  assert.deepEqual(c.args[0], { owner: 'u1', isPersonal: true });
+});
+
+test('a solo user is handled by the same membership query, with no null id written', async () => {
+  const { call, all } = await runPurge(solo);
   assert.equal(call('Group', 'updateOne'), undefined,
     'with groupId null, `{ _id: null }` is a query that can match the wrong thing');
+  assert.ok(all('Group').every(c => !JSON.stringify(c.args).includes('null')),
+    'no group query may carry a null id');
 });
 
 test('the user record itself is deleted last', async () => {
