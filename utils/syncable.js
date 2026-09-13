@@ -15,11 +15,16 @@
  * `ownerKey` names the field that scopes uniqueness of `clientId` — `userId` for most, `ownerId`
  * for trips.
  */
+const { monotonicNow } = require('./clock');
+
 function syncable(schema, { ownerKey = 'userId' } = {}) {
+  // No defaults on the two clocks: a default would be applied when an older row is *read*, which
+  // would make every row that predates sync look edited just now and beat any push touching it.
+  // The hooks below stamp them on write; `lww` treats a missing `updatedAt` as nothing to lose.
   schema.add({
     clientId:  { type: String, default: undefined, trim: true, maxlength: 64 },
-    updatedAt: { type: Date, default: Date.now },
-    syncedAt:  { type: Date, default: Date.now },
+    updatedAt: { type: Date, default: undefined },
+    syncedAt:  { type: Date, default: undefined },
   });
   if (!schema.path('deletedAt')) schema.add({ deletedAt: { type: Date, default: null } });
 
@@ -27,7 +32,7 @@ function syncable(schema, { ownerKey = 'userId' } = {}) {
   schema.index({ syncedAt: 1 });
 
   schema.pre('save', async function () {
-    const now = new Date();
+    const now = monotonicNow();
     if (this.isNew || this.isModified()) {
       if (!this.isModified('updatedAt')) this.updatedAt = now;
       this.syncedAt = now;
@@ -39,7 +44,7 @@ function syncable(schema, { ownerKey = 'userId' } = {}) {
   schema.pre(['updateOne', 'updateMany', 'findOneAndUpdate', 'replaceOne'], async function () {
     const update = this.getUpdate() || {};
     const set = update.$set || (update.$set = {});
-    const now = new Date();
+    const now = monotonicNow();
     const touchesUpdatedAt = 'updatedAt' in set || 'updatedAt' in update;
     if (!touchesUpdatedAt) set.updatedAt = now;
     set.syncedAt = now;

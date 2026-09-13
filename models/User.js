@@ -30,6 +30,13 @@ const userSchema = new mongoose.Schema({
     // IANA zone, e.g. "Asia/Kolkata". Captured from the device at signup and used by
     // utils/recurrence.js so that "monthly" means the same day next month where the user lives.
     timezone: { type: String, default: 'UTC' },
+    // The device's backup schedule, mirrored here so a reinstall keeps it (W3-10). The device is
+    // the authority; this is a copy.
+    backupSchedule: {
+        type: String,
+        enum: ['instant', 'hourly', 'every4h', 'every8h', 'daily', 'manual'],
+        default: 'instant',
+    },
 });
 
 module.exports = mongoose.model("User", userSchema);

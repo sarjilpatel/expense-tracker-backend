@@ -33,6 +33,7 @@ const { notFound, errorHandler } = require("./middleware/errorHandler");
 const Transaction = require("./models/Transaction");
 const User        = require("./models/User");
 const { purgeUser } = require("./utils/purgeUser");
+const { purgeTombstones } = require("./utils/tombstones");
 
 const authRoutes        = require("./routes/authRoutes");
 const groupRoutes       = require("./routes/groupRoutes");
@@ -42,6 +43,7 @@ const goalRoutes        = require("./routes/goalRoutes");
 const tripRoutes        = require("./routes/tripRoutes");
 const userRoutes        = require("./routes/userRoutes");
 const accountRoutes     = require("./routes/accountRoutes");
+const syncRoutes        = require("./routes/syncRoutes");
 
 const app = express();
 const server = http.createServer(app);
@@ -83,6 +85,19 @@ const apiLimiter = rateLimit({
     keyGenerator: rateLimitKey,
     message: { message: "Too many requests, please slow down." },
 });
+// The sync endpoints sit outside the general limiter with a bucket of their own (W3-09): a push
+// is one request per 500 rows and a full pull pages at up to 1,000, so a device catching up after
+// a day offline can legitimately make a burst of them — and nothing else runs in that burst.
+const syncLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 120,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: rateLimitKey,
+    message: { message: "Too many sync requests, please slow down." },
+});
+app.use('/api/sync', syncLimiter, syncRoutes);
+
 app.use('/api', apiLimiter);
 
 // Attach io to app so it's accessible in controllers
@@ -250,6 +265,13 @@ cron.schedule("5 0 * * *", async () => {
         }
     } catch {
         if (process.env.NODE_ENV !== 'production') console.error("Account purge cron error");
+    }
+
+    // Same tick: tombstones past their 30 days go for good (W3-12).
+    try {
+        await purgeTombstones();
+    } catch {
+        if (process.env.NODE_ENV !== 'production') console.error("Tombstone purge cron error");
     }
 });
 

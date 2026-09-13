@@ -4,7 +4,7 @@ const rateLimit = require("express-rate-limit");
 const {
   signup, login, logout, getMe, updateProfile, deleteAccount, cancelDeletion, refreshToken,
   forgotPassword, resetPassword, verifySignup, resendOtp,
-  updateAiConsent, getProfilePhotoUrl, googleAuth, updateTimezone,
+  updateAiConsent, getProfilePhotoUrl, googleAuth, updateTimezone, updateBackupSchedule,
 } = require("../controllers/authController");
 const auth   = require("../middleware/authMiddleware");
 const upload = require("../middleware/uploadMiddleware");
@@ -52,6 +52,9 @@ router.patch("/timezone",                 auth,         validateTimezone,       
 
 // AI consent
 router.patch("/ai-consent",               auth,                                  updateAiConsent);
+
+// Backup schedule mirror (W3-10)
+router.patch("/backup-schedule",          auth,                                  updateBackupSchedule);
 
 // Pre-signed profile photo URL
 router.get ("/me/photo-url",              auth,                                  getProfilePhotoUrl);

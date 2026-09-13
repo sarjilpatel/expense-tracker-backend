@@ -484,3 +484,20 @@ exports.updateAiConsent = async (req, res) => {
         res.status(500).json({ message: "Failed to update AI consent" });
     }
 };
+
+// @desc    Mirror the device's backup schedule (W3-10)
+// @route   PATCH /api/auth/backup-schedule
+// @access  Private
+const BACKUP_SCHEDULES = ['instant', 'hourly', 'every4h', 'every8h', 'daily', 'manual'];
+exports.updateBackupSchedule = async (req, res) => {
+    try {
+        const { backupSchedule } = req.body;
+        if (!BACKUP_SCHEDULES.includes(backupSchedule)) {
+            return res.status(400).json({ message: "Unknown backup schedule" });
+        }
+        await User.updateOne({ _id: req.user.id }, { backupSchedule });
+        res.json({ backupSchedule });
+    } catch (error) {
+        res.status(500).json({ message: "Server error" });
+    }
+};

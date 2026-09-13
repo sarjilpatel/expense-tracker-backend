@@ -14,8 +14,8 @@ const categorySchema = new mongoose.Schema({
   // category is a tombstone, never spliced out: `activeCategories()` in utils/categories.js is
   // what every reader goes through.
   clientId:  { type: String, default: undefined, trim: true, maxlength: 64 },
-  updatedAt: { type: Date, default: Date.now },
-  syncedAt:  { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: undefined },
+  syncedAt:  { type: Date, default: undefined },
   deletedAt: { type: Date, default: null },
 });
 
@@ -63,7 +63,7 @@ const groupSchema = new mongoose.Schema({
 });
 
 groupSchema.pre("save", async function () {
-  const now = new Date();
+  const now = monotonicNow();
   for (const c of this.categories) {
     if (c.isNew || c.isModified()) {
       if (!c.isModified("updatedAt")) c.updatedAt = now;
