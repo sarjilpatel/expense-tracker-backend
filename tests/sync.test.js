@@ -123,7 +123,8 @@ function fakeModel(name) {
     },
     find(filter) {
       const found = rows.filter((r) => match(r, filter)).sort((a, b) => new Date(a.syncedAt || 0) - new Date(b.syncedAt || 0));
-      const q = { sort: () => q, limit: (n) => ({ lean: async () => found.slice(0, n).map((r) => ({ ...r })) }) };
+      const lean = async () => found.map((r) => ({ ...r }));
+      const q = { sort: () => q, limit: (n) => ({ lean: async () => found.slice(0, n).map((r) => ({ ...r })) }), lean };
       return q;
     },
     seed(row) { const d = doc({ _id: `${name}-${++seq}`, ...row }); rows.push(d); return d; },
@@ -320,4 +321,22 @@ test('a bad cursor is a 400', async () => {
   const h = harness();
   const r = await h.changes({ since: 'last tuesday' });
   assert.equal(r.statusCode, 400);
+});
+
+test("a transaction's accountId travels as the account's clientId in both directions", async () => {
+  const h = harness();
+  const r = await h.push([
+    { collection: 'accounts', op: 'upsert', clientId: 'acc-wallet', updatedAt: at('2026-09-13T11:00:00Z'), payload: { name: 'Wallet' } },
+    tx('t1', at('2026-09-13T11:00:00Z'), { accountId: 'acc-wallet' }),
+  ]);
+  const by = Object.fromEntries(r.body.results.map((x) => [x.clientId, x]));
+  const serverAccountId = by['acc-wallet'].serverId;
+  assert.equal(String(h.models.transactions.rows[0].accountId), serverAccountId, 'stored as the server id');
+  assert.equal(by.t1.row.accountId, 'acc-wallet', 'returned as the clientId');
+
+  const feed = await h.changes({});
+  assert.equal(feed.body.changes.find((c) => c.clientId === 't1').row.accountId, 'acc-wallet');
+
+  const unknown = await h.push([tx('t2', at('2026-09-13T11:00:00Z'), { accountId: 'no-such-account' })]);
+  assert.equal(unknown.body.results[0].row.accountId, null, 'an account the server does not know is unassigned, not an error');
 });

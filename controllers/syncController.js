@@ -26,13 +26,28 @@ const MODELS = { transactions: Transaction, budgets: Budget, accounts: Account, 
 
 const isObjectId = (v) => typeof v === 'string' && mongoose.isValidObjectId(v);
 
-/** The device-facing shape of a row: the note in clear, the blind index never. */
-function serialize(collection, row) {
+/**
+ * The device-facing shape of a row: the note in clear, the blind index never, and a transaction's
+ * `accountId` as the *account's clientId* — the device only ever knows its own ids, so the server
+ * translates at the edge in both directions (see `resolveAccountId`).
+ */
+function serialize(collection, row, scope) {
   const plain = typeof row.toObject === 'function' ? row.toObject() : { ...row };
   delete plain.noteTokens;
   delete plain.__v;
-  if (collection === 'transactions' && plain.note) plain.note = decryptField(plain.note);
+  if (collection === 'transactions') {
+    if (plain.note) plain.note = decryptField(plain.note);
+    if (plain.accountId) plain.accountId = scope.accountClientIds.get(String(plain.accountId)) || String(plain.accountId);
+  }
   return plain;
+}
+
+/** A pushed `accountId` is the account's clientId (or a server id for pre-sync rows); store the server id. */
+function resolveAccountId(value, scope) {
+  if (!value) return null;
+  const byClient = scope.accountServerIds.get(String(value));
+  if (byClient) return byClient;
+  return isObjectId(String(value)) ? value : null;
 }
 
 /** Fields the server derives for a transaction from its clear-text note. */
@@ -46,14 +61,17 @@ function noteFields(payload) {
 
 /** The groups the caller belongs to, as id strings, and the active one. */
 async function callerScope(userId) {
-  const [user, groups] = await Promise.all([
+  const [user, groups, accounts] = await Promise.all([
     User.findById(userId),
     Group.find({ members: userId }),
+    Account.find({ userId }).lean(),
   ]);
   if (!user) throw new SyncError(401, 'Unauthorized');
   const groupIds = groups.map((g) => String(g._id));
   const activeGroupId = user.groupId ? String(user.groupId) : (groupIds[0] || null);
-  return { user, groups, groupIds, activeGroupId };
+  const accountClientIds = new Map(accounts.map((a) => [String(a._id), toClientId(a)]));
+  const accountServerIds = new Map(accounts.map((a) => [toClientId(a), String(a._id)]));
+  return { user, groups, groupIds, activeGroupId, accountClientIds, accountServerIds };
 }
 
 /** The group a pushed row is filed under: the one it names if the caller is a member, else the active one. */
@@ -83,7 +101,7 @@ async function applyRow(item, scope) {
 
   const existing = await findExisting(Model, ownerFilter, item.clientId);
   if (existing && lww(existing.updatedAt, item.updatedAt) === 'superseded') {
-    return { status: 'superseded', serverId: String(existing._id), row: serialize(item.collection, existing) };
+    return { status: 'superseded', serverId: String(existing._id), row: serialize(item.collection, existing, scope) };
   }
 
   if (item.op === 'delete') {
@@ -91,12 +109,15 @@ async function applyRow(item, scope) {
     if (!existing) return { status: 'applied', serverId: null };
     existing.set({ deletedAt: item.updatedAt, updatedAt: item.updatedAt });
     await existing.save();
-    return { status: 'applied', serverId: String(existing._id), row: serialize(item.collection, existing) };
+    return { status: 'applied', serverId: String(existing._id), row: serialize(item.collection, existing, scope) };
   }
 
   if (!existing) requireForInsert(item.collection, item.payload);
   const fields = { ...item.payload };
-  if (item.collection === 'transactions') Object.assign(fields, noteFields(item.payload));
+  if (item.collection === 'transactions') {
+    Object.assign(fields, noteFields(item.payload));
+    if ('accountId' in fields) fields.accountId = resolveAccountId(fields.accountId, scope);
+  }
   if (item.collection === 'trips') delete fields.createdAt;
 
   const scoped = { [ownerKey]: existing ? existing[ownerKey] : userId };
@@ -114,7 +135,11 @@ async function applyRow(item, scope) {
     filter, update,
     { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true },
   );
-  return { status: 'applied', serverId: String(row._id), row: serialize(item.collection, row) };
+  if (item.collection === 'accounts') {
+    scope.accountServerIds.set(item.clientId, String(row._id));
+    scope.accountClientIds.set(String(row._id), item.clientId);
+  }
+  return { status: 'applied', serverId: String(row._id), row: serialize(item.collection, row, scope) };
 }
 
 /** Categories live on the group document, so they are upserted in place and the group saved. */
@@ -218,7 +243,7 @@ exports.changes = async (req, res) => {
         syncedAt: row.syncedAt || row.updatedAt || row.createdAt || new Date(0),
         updatedAt: row.updatedAt || row.createdAt || new Date(0),
         deleted: !!row.deletedAt,
-        row: serialize(collection, row),
+        row: serialize(collection, row, scope),
       });
     }
   }
