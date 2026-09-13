@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { syncable } = require("../utils/syncable");
 
 const transactionSchema = new mongoose.Schema({
   amount: {
@@ -89,4 +90,5 @@ transactionSchema.index({ noteTokens: 1 });
 // getTxAccountMap reads every assigned row for one user; without this it is a full collection scan.
 transactionSchema.index({ userId: 1, accountId: 1 });
 
+transactionSchema.plugin(syncable);
 module.exports = mongoose.model("Transaction", transactionSchema);

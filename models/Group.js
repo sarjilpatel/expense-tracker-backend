@@ -8,7 +8,15 @@ const categorySchema = new mongoose.Schema({
   // none, and the app falls back to the icon.
   emoji: { type: String, default: "" },
   type: { type: String, enum: ['income', 'expense', 'both'], default: 'expense' },
-  isActive: { type: Boolean, default: true }
+  isActive: { type: Boolean, default: true },
+  // Sync fields (W3-05/06) — the same trio the top-level models get from the syncable plugin,
+  // kept by the group's pre-save below because a subdocument has no hooks of its own. A removed
+  // category is a tombstone, never spliced out: `activeCategories()` in utils/categories.js is
+  // what every reader goes through.
+  clientId:  { type: String, default: undefined, trim: true, maxlength: 64 },
+  updatedAt: { type: Date, default: Date.now },
+  syncedAt:  { type: Date, default: Date.now },
+  deletedAt: { type: Date, default: null },
 });
 
 const pendingMemberSchema = new mongoose.Schema({
@@ -51,6 +59,16 @@ const groupSchema = new mongoose.Schema({
       { name: "Gift", icon: "gift", type: "income" },
       { name: "Other", icon: "ellipsis-horizontal", type: "both" }
     ]
+  }
+});
+
+groupSchema.pre("save", async function () {
+  const now = new Date();
+  for (const c of this.categories) {
+    if (c.isNew || c.isModified()) {
+      if (!c.isModified("updatedAt")) c.updatedAt = now;
+      c.syncedAt = now;
+    }
   }
 });
 

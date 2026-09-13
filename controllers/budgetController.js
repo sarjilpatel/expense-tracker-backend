@@ -12,6 +12,7 @@ exports.getBudgets = async (req, res) => {
     const now = new Date();
     const filter = {
       userId,
+      deletedAt: null,
       month: month ? parseInt(month) : now.getMonth() + 1,
       year:  year  ? parseInt(year)  : now.getFullYear(),
     };
@@ -40,9 +41,10 @@ exports.setBudget = async (req, res) => {
       category: category || null,
     };
 
+    // A budget that was deleted and set again on the same period is the same row revived.
     const budget = await Budget.findOneAndUpdate(
       query,
-      { amount },
+      { $set: { amount, deletedAt: null } },
       { upsert: true, new: true }
     );
 
@@ -59,7 +61,8 @@ exports.setBudget = async (req, res) => {
 exports.deleteBudget = async (req, res) => {
   try {
     const userId = req.user.id;
-    const budget = await Budget.findOneAndDelete({ _id: req.params.id, userId });
+    // Tombstone, not removal (W3-05): the sync feed has to be able to tell other devices.
+    const budget = await Budget.findOneAndUpdate({ _id: req.params.id, userId, deletedAt: null }, { $set: { deletedAt: new Date() } });
     if (!budget) return res.status(404).json({ msg: 'Budget not found' });
     res.json({ msg: 'Budget deleted' });
   } catch (err) {

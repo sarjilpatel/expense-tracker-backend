@@ -40,6 +40,7 @@ function fakeGroups(rows = []) {
     async create(doc) {
       const row = { _id: `g${++seq}`, categories: [{ name: 'Food', type: 'expense' }], pendingMembers: [], ...doc };
       row.save = async () => row;
+      row.toObject = () => { const { save, toObject, ...plain } = row; return plain; };
       rows.push(row);
       return row;
     },

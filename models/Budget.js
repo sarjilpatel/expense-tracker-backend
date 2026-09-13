@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { syncable } = require("../utils/syncable");
 
 const budgetSchema = new mongoose.Schema({
   userId: {
@@ -34,4 +35,5 @@ const budgetSchema = new mongoose.Schema({
   },
 });
 
+budgetSchema.plugin(syncable);
 module.exports = mongoose.model("Budget", budgetSchema);

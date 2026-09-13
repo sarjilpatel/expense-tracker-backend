@@ -35,9 +35,8 @@ function makeTrip(over = {}) {
     ],
     settlements: [],
     saved:   false,
-    deleted: false,
+    deletedAt: null,
     async save() { this.saved = true; },
-    async deleteOne() { this.deleted = true; },
     async populate() { return this; },
     ...over,
   };
@@ -94,7 +93,7 @@ test('only the owner can delete a trip', async () => {
   await ctrl.deleteTrip(req(DEBTOR), res);
 
   assert.equal(res.statusCode, 403);
-  assert.equal(trip.deleted, false,
+  assert.equal(trip.deletedAt, null,
     'a debtor could otherwise wipe the record of their own unsettled debt');
 });
 
@@ -105,14 +104,16 @@ test('the owner can delete their own trip', async () => {
   await ctrl.deleteTrip(req(OWNER), res);
 
   assert.equal(res.statusCode, null, JSON.stringify(res.body));
-  assert.equal(trip.deleted, true);
+  // A tombstone, saved — never removed — so the sync feed can tell other devices (W3-05).
+  assert.ok(trip.deletedAt instanceof Date);
+  assert.equal(trip.saved, true);
 });
 
 test('deleting looks the trip up first rather than deleting by id', async () => {
   // `findOneAndDelete` would leave no chance to check the owner — the W1-13 shape of the bug.
   const { ctrl, calls } = load(makeTrip());
   await ctrl.deleteTrip(req(OWNER), mockRes());
-  assert.deepEqual(calls.findOne, { _id: 'trip1', groupId: GROUP });
+  assert.deepEqual(calls.findOne, { _id: 'trip1', groupId: GROUP, deletedAt: null });
 });
 
 test('a member cannot add an expense to someone else\'s trip', async () => {

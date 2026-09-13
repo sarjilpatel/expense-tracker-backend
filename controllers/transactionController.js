@@ -5,6 +5,7 @@ const Account = require("../models/Account");
 const { encryptField, decryptField, noteTokens, noteSearchToken, isEncryptionEnabled } = require('../utils/fieldCrypto');
 const { computeNextDueDate } = require('../utils/recurrence');
 const { buildScope }         = require('../utils/scope');
+const { activeCategories }   = require('../utils/categories');
 
 // User input is interpolated into $regex; without this a metacharacter is a 500 at best.
 function escapeRegex(str) {
@@ -32,7 +33,7 @@ exports.addTransaction = async (req, res) => {
     if (user.groupId) {
       const group = await Group.findById(user.groupId);
       if (group) {
-        const isValidCategory = group.categories.some(c => c.name === category);
+        const isValidCategory = activeCategories(group).some(c => c.name === category);
         if (!isValidCategory) {
           return res.status(400).json({ msg: "Invalid category. Please use a group-defined category." });
         }
@@ -376,7 +377,7 @@ exports.updateTransaction = async (req, res) => {
     if (category && user.groupId) {
       const group = await Group.findById(user.groupId);
       if (group) {
-        const isValidCategory = group.categories.some(c => c.name === category);
+        const isValidCategory = activeCategories(group).some(c => c.name === category);
         if (!isValidCategory) return res.status(400).json({ msg: "Invalid category" });
       }
     }
@@ -625,7 +626,7 @@ exports.importTransactions = async (req, res) => {
 
     // One lookup for the whole batch rather than a per-row ownership query.
     const ownedAccountIds = new Set(
-      (await Account.find({ userId }, { _id: 1 }).lean()).map(a => a._id.toString())
+      (await Account.find({ userId, deletedAt: null }, { _id: 1 }).lean()).map(a => a._id.toString())
     );
 
     const docs = transactions

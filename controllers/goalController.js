@@ -9,8 +9,8 @@ exports.getGoals = async (req, res) => {
 
     // Personal goals + group goals if user is in a group
     const query = user.groupId
-      ? { $or: [{ userId }, { groupId: user.groupId }] }
-      : { userId };
+      ? { deletedAt: null, $or: [{ userId }, { groupId: user.groupId }] }
+      : { deletedAt: null, userId };
 
     const goals = await Goal.find(query).sort({ createdAt: -1 });
     res.json(goals);
@@ -102,10 +102,11 @@ exports.deleteGoal = async (req, res) => {
     if (!user) return res.status(401).json({ msg: 'Unauthorized' });
 
     const query = user.groupId
-      ? { _id: req.params.id, $or: [{ userId }, { groupId: user.groupId }] }
-      : { _id: req.params.id, userId };
+      ? { _id: req.params.id, deletedAt: null, $or: [{ userId }, { groupId: user.groupId }] }
+      : { _id: req.params.id, deletedAt: null, userId };
 
-    const goal = await Goal.findOneAndDelete(query);
+    // Tombstone, not removal (W3-05).
+    const goal = await Goal.findOneAndUpdate(query, { $set: { deletedAt: new Date() } });
     if (!goal) return res.status(404).json({ msg: 'Goal not found' });
 
     if (user.groupId && goal.groupId?.toString() === user.groupId.toString()) {

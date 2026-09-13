@@ -35,7 +35,7 @@ async function loadTrip(req, res) {
   const user = await User.findById(req.user.id);
   if (!user?.groupId) { res.status(400).json({ message: 'User not in a group' }); return null; }
 
-  const trip = await Trip.findOne({ _id: req.params.id, groupId: user.groupId });
+  const trip = await Trip.findOne({ _id: req.params.id, groupId: user.groupId, deletedAt: null });
   if (!trip) { res.status(404).json({ message: 'Trip not found' }); return null; }
 
   return { user, trip };
@@ -88,7 +88,7 @@ exports.getTrips = async (req, res) => {
   const user = await User.findById(req.user.id);
   if (!user?.groupId) return res.status(400).json({ message: 'User not in a group' });
 
-  const trips = await Trip.find({ groupId: user.groupId })
+  const trips = await Trip.find({ groupId: user.groupId, deletedAt: null })
     .populate(populate)
     .sort({ updatedAt: -1 });
 
@@ -167,7 +167,9 @@ exports.deleteTrip = async (req, res) => {
   const { trip } = loaded;
   if (!ownsTrip(trip, req)) return res.status(403).json({ message: 'Only the trip owner can delete this trip' });
 
-  await trip.deleteOne();
+  // Tombstone, not removal (W3-05).
+  trip.deletedAt = new Date();
+  await trip.save();
   emit(req, trip, 'trip_deleted', req.params.id);
   res.json({ message: 'Trip deleted' });
 };

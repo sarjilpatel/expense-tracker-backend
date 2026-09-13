@@ -2,6 +2,7 @@ const Group = require("../models/Group");
 const User = require("../models/User");
 const { resolveActiveGroup, generateUniqueJoinCode } = require("../utils/personalGroup");
 const { listPresets, newCategoriesFor }              = require("../utils/categoryPresets");
+const { activeCategories }                           = require("../utils/categories");
 
 exports.createGroup = async (req, res) => {
     try {
@@ -160,7 +161,10 @@ exports.getGroupDetails = async (req, res) => {
             await group.save();
         }
 
-        res.json(group);
+        // Tombstoned categories stay in the document for the sync feed; the app never sees them.
+        const out = group.toObject();
+        out.categories = activeCategories(group);
+        res.json(out);
     } catch (error) {
         res.status(500).json({ message: "Server error fetching group details" });
     }
@@ -218,14 +222,20 @@ exports.addCategory = async (req, res) => {
 
         // Names are what transactions reference, and addTransaction validates against this list —
         // two categories with the same name would make that check ambiguous.
-        if (group.categories.some(c => c.name.trim().toLowerCase() === name.toLowerCase())) {
+        if (activeCategories(group).some(c => c.name.trim().toLowerCase() === name.toLowerCase())) {
             return res.status(400).json({ message: "That category already exists" });
         }
 
-        group.categories.push({ name, icon, emoji: emoji || "", type: type || 'expense' });
+        // A removed category of the same name comes back as itself rather than as a second row.
+        const buried = group.categories.find(c => c.deletedAt && c.name.trim().toLowerCase() === name.toLowerCase());
+        if (buried) {
+            buried.set({ icon, emoji: emoji || "", type: type || 'expense', deletedAt: null });
+        } else {
+            group.categories.push({ name, icon, emoji: emoji || "", type: type || 'expense' });
+        }
         await group.save();
 
-        res.json(group.categories);
+        res.json(activeCategories(group));
     } catch (error) {
         res.status(500).json({ message: "Failed to add category" });
     }
@@ -238,10 +248,14 @@ exports.removeCategory = async (req, res) => {
         const user   = await User.findById(userId);
         const group  = await resolveActiveGroup(user);
 
-        group.categories = group.categories.filter(c => c._id.toString() !== categoryId);
-        await group.save();
+        // Tombstone, not removal (W3-05): the sync feed has to be able to tell other devices.
+        const cat = group.categories.find(c => c._id.toString() === categoryId && !c.deletedAt);
+        if (cat) {
+            cat.deletedAt = new Date();
+            await group.save();
+        }
 
-        res.json(group.categories);
+        res.json(activeCategories(group));
     } catch (error) {
         res.status(500).json({ message: "Failed to remove category" });
     }
@@ -261,7 +275,7 @@ exports.applyCategoryPreset = async (req, res) => {
         const user   = await User.findById(userId);
         const group  = await resolveActiveGroup(user);
 
-        const additions = newCategoriesFor(key, group.categories);
+        const additions = newCategoriesFor(key, activeCategories(group));
         if (additions === null) return res.status(404).json({ message: "Unknown category preset" });
 
         if (additions.length) {
@@ -269,7 +283,7 @@ exports.applyCategoryPreset = async (req, res) => {
             await group.save();
         }
 
-        res.json({ categories: group.categories, added: additions.length });
+        res.json({ categories: activeCategories(group), added: additions.length });
     } catch (error) {
         res.status(500).json({ message: "Failed to apply category preset" });
     }
@@ -290,8 +304,8 @@ exports.importCategories = async (req, res) => {
         if (String(targetGroup._id) === String(fromGroup._id)) {
             return res.status(400).json({ message: "That is the group you are importing into" });
         }
-        const existingNames  = targetGroup.categories.map(c => c.name.toLowerCase());
-        const newCategories  = fromGroup.categories.filter(c => {
+        const existingNames  = activeCategories(targetGroup).map(c => c.name.toLowerCase());
+        const newCategories  = activeCategories(fromGroup).filter(c => {
             const isNew      = !existingNames.includes(c.name.toLowerCase());
             const catType    = c.type || 'expense';
             const typeMatches = !type || type === 'both' || catType === type;
@@ -303,7 +317,7 @@ exports.importCategories = async (req, res) => {
         })));
         await targetGroup.save();
 
-        res.json(targetGroup.categories);
+        res.json(activeCategories(targetGroup));
     } catch (error) {
         res.status(500).json({ message: "Failed to import categories" });
     }

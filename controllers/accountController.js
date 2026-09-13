@@ -20,7 +20,7 @@ function shape(doc) {
 
 exports.getAccounts = async (req, res) => {
   try {
-    const accounts = await Account.find({ userId: req.user.id }).sort({ createdAt: 1 }).lean();
+    const accounts = await Account.find({ userId: req.user.id, deletedAt: null }).sort({ createdAt: 1 }).lean();
     res.json(accounts.map(shape));
   } catch (error) {
     console.error('Get accounts error:', error);
@@ -43,7 +43,7 @@ exports.updateAccount = async (req, res) => {
     // Scoped by userId in the filter, not checked afterwards — one query that cannot touch
     // someone else's account even if the id is guessed.
     const account = await Account.findOneAndUpdate(
-      { _id: req.params.id, userId: req.user.id },
+      { _id: req.params.id, userId: req.user.id, deletedAt: null },
       { $set: req.body },
       { new: true, runValidators: true }
     );
@@ -57,7 +57,8 @@ exports.updateAccount = async (req, res) => {
 
 exports.deleteAccount = async (req, res) => {
   try {
-    const account = await Account.findOneAndDelete({ _id: req.params.id, userId: req.user.id });
+    // Tombstone, not removal (W3-05).
+    const account = await Account.findOneAndUpdate({ _id: req.params.id, userId: req.user.id, deletedAt: null }, { $set: { deletedAt: new Date() } });
     if (!account) return res.status(404).json({ msg: 'Account not found' });
 
     // Unassign rather than delete. The transactions are real spending the user has already seen;

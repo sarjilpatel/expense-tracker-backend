@@ -14,15 +14,16 @@ const TX         = '507f191e810c19729de860ec';
 const OWNED = new Set([MY_ACC]);
 
 function load({ mapRows = [], accountRows = [], txFound = true } = {}) {
-  const seen = { exists: null, updateMany: null, findOneAndUpdate: null, findOneAndDelete: null, created: [] };
+  const seen = { exists: null, updateMany: null, findOneAndUpdate: null, tombstoned: null, created: [] };
 
   const Account = {
     exists: async (q) => {
       seen.exists = q;
       return q.userId === ME && OWNED.has(String(q._id)) ? { _id: q._id } : null;
     },
-    findOneAndDelete: async (q) => {
-      seen.findOneAndDelete = q;
+    // Deletion is a tombstone (W3-05): a scoped findOneAndUpdate setting deletedAt.
+    findOneAndUpdate: async (q, update) => {
+      seen.tombstoned = { filter: q, update };
       return q.userId === ME && OWNED.has(String(q._id)) ? { _id: q._id } : null;
     },
     find: () => ({ sort: () => ({ lean: async () => accountRows }) }),
@@ -104,6 +105,7 @@ test('deleting an account unassigns its transactions instead of deleting them', 
   await ctrl.deleteAccount(req({ params: { id: MY_ACC } }), res);
 
   assert.equal(res.statusCode, null, JSON.stringify(res.body));
+  assert.ok(seen.tombstoned.update.$set.deletedAt instanceof Date, 'the account is tombstoned, not removed');
   assert.deepEqual(seen.updateMany.update, { $set: { accountId: null } });
   assert.equal(seen.updateMany.filter.userId, ME);
   assert.equal(String(seen.updateMany.filter.accountId), MY_ACC);
@@ -117,7 +119,7 @@ test('deleting an account you do not own is a 404 and touches nothing', async ()
   assert.equal(res.statusCode, 404);
   assert.equal(seen.updateMany, null, 'someone else\'s transactions must not be unassigned');
   // The delete itself is scoped, so it can never remove another user's account.
-  assert.equal(seen.findOneAndDelete.userId, ME);
+  assert.equal(seen.tombstoned.filter.userId, ME);
 });
 
 test('the tx->account map only covers assigned rows', async () => {

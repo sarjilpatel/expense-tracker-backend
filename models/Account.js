@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { syncable } = require("../utils/syncable");
 
 // Accounts are personal, not shared: they are scoped by userId, never groupId. A group shares
 // transactions and categories, but "my wallet" is not a thing the group should see or edit.
@@ -33,4 +34,5 @@ const accountSchema = new mongoose.Schema({
   },
 });
 
+accountSchema.plugin(syncable);
 module.exports = mongoose.model("Account", accountSchema);

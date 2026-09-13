@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { syncable } = require("../utils/syncable");
 
 /**
  * A member of a trip. Ad-hoc by design: `name` is all that is required, so a trip can include
@@ -64,13 +65,8 @@ const tripSchema = new mongoose.Schema({
   settlements: { type: [tripSettlementSchema], default: [] },
 
   createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now },
+  // `updatedAt`, `syncedAt`, `deletedAt` and `clientId` come from the syncable plugin below.
 });
 
-// Mongoose 9 runs middleware as promises — a `next` callback is no longer passed, so the
-// callback form fails at the first save with "next is not a function".
-tripSchema.pre("save", async function () {
-  this.updatedAt = new Date();
-});
-
+tripSchema.plugin(syncable, { ownerKey: 'ownerId' });
 module.exports = mongoose.model("Trip", tripSchema);
