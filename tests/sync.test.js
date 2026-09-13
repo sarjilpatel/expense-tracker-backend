@@ -340,3 +340,19 @@ test("a transaction's accountId travels as the account's clientId in both direct
   const unknown = await h.push([tx('t2', at('2026-09-13T11:00:00Z'), { accountId: 'no-such-account' })]);
   assert.equal(unknown.body.results[0].row.accountId, null, 'an account the server does not know is unassigned, not an error');
 });
+
+test('a device-made trip links its self member and unattributed settlements to the caller', async () => {
+  const h = harness();
+  const r = await h.push([{ collection: 'trips', op: 'upsert', clientId: 'trip-goa', updatedAt: at('2026-09-13T11:00:00Z'), payload: {
+    name: 'Goa', currency: 'INR',
+    members: [{ id: 'm1', name: 'You', userId: null, isSelf: true }, { id: 'm2', name: 'Priya', userId: null }],
+    expenses: [], settlements: [{ id: 's1', fromId: 'm2', toId: 'm1', amountMinor: 500, settledAt: '2026-09-13T10:00:00Z', recordedBy: null }],
+  } }]);
+  assert.equal(r.body.results[0].status, 'applied');
+  const trip = h.models.trips.rows[0];
+  assert.equal(String(trip.ownerId), ME);
+  assert.equal(String(trip.members[0].userId), ME, 'the self member is the caller');
+  assert.equal(trip.members[0].isSelf, undefined, 'the marker does not reach the schema');
+  assert.equal(trip.members[1].userId, null);
+  assert.equal(String(trip.settlements[0].recordedBy), ME);
+});

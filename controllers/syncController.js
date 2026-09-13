@@ -118,7 +118,21 @@ async function applyRow(item, scope) {
     Object.assign(fields, noteFields(item.payload));
     if ('accountId' in fields) fields.accountId = resolveAccountId(fields.accountId, scope);
   }
-  if (item.collection === 'trips') delete fields.createdAt;
+  if (item.collection === 'trips') {
+    delete fields.createdAt;
+    // A trip made on the device seeds a member marked `isSelf` with no account behind it, and
+    // records settlements with no `recordedBy` — both are the caller. Linking them here is what
+    // keeps the user from appearing twice (see the local trip service and W2-28).
+    if (Array.isArray(fields.members)) {
+      fields.members = fields.members.map((m) => {
+        const { isSelf, photo, ...member } = m || {};
+        return isSelf && !member.userId ? { ...member, userId } : member;
+      });
+    }
+    if (Array.isArray(fields.settlements)) {
+      fields.settlements = fields.settlements.map((s) => (s && !s.recordedBy ? { ...s, recordedBy: userId } : s));
+    }
+  }
 
   const scoped = { [ownerKey]: existing ? existing[ownerKey] : userId };
   if (item.collection === 'transactions' || item.collection === 'goals' || item.collection === 'trips') {
