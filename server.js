@@ -44,6 +44,7 @@ const tripRoutes        = require("./routes/tripRoutes");
 const userRoutes        = require("./routes/userRoutes");
 const accountRoutes     = require("./routes/accountRoutes");
 const syncRoutes        = require("./routes/syncRoutes");
+const attachmentRoutes  = require("./routes/attachmentRoutes");
 
 const app = express();
 const server = http.createServer(app);
@@ -97,6 +98,7 @@ const syncLimiter = rateLimit({
     message: { message: "Too many sync requests, please slow down." },
 });
 app.use('/api/sync', syncLimiter, syncRoutes);
+app.use('/api/attachments', syncLimiter, attachmentRoutes);
 
 app.use('/api', apiLimiter);
 

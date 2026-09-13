@@ -80,6 +80,13 @@ const transactionSchema = new mongoose.Schema({
     ref: "Account",
     default: null,
   },
+  // The S3 key of the attached receipt, if any (W3-24). Set by the attachments endpoint, never by
+  // a sync push — the bytes go through the upload, and the row carries the pointer so other
+  // devices know there is something to fetch on demand.
+  receiptKey: {
+    type: String,
+    default: null,
+  },
 });
 
 // The text index that used to be here covered `note`, which is ciphertext — it indexed base64

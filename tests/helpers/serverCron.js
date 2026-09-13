@@ -40,7 +40,7 @@ function loadServerCrons(models = {}, { backup } = {}) {
     './routes/transactionRoutes': express.Router(), './routes/budgetRoutes': express.Router(),
     './routes/goalRoutes': express.Router(),   './routes/tripRoutes': express.Router(),
     './routes/userRoutes': express.Router(),   './routes/accountRoutes': express.Router(),
-    './routes/syncRoutes': express.Router(),
+    './routes/syncRoutes': express.Router(),   './routes/attachmentRoutes': express.Router(),
     // The 00:05 tick also purges tombstones (W3-12); it is pinned by tests/tombstones.test.js on
     // its own, and without a stub it would sit on Mongoose's connection buffer here.
     './utils/tombstones': { purgeTombstones: async () => ({}) },

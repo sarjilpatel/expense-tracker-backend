@@ -36,5 +36,23 @@ const upload = multer({
   },
 });
 
+// Receipts (W3-24): filed under the owner; the transaction is named by the route's clientId.
+const receiptUpload = multer({
+  storage: multerS3({
+    s3: s3,
+    bucket: process.env.S3_BUCKET_NAME || 'dummy-bucket',
+    key: function (req, file, cb) {
+      const ext = (file.originalname.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+      cb(null, `receipts/${req.user.id}/${randomUUID()}.${ext}`);
+    },
+  }),
+  limits: { fileSize: MAX_FILE_SIZE_BYTES },
+  fileFilter: function (req, file, cb) {
+    if (ALLOWED_MIME_TYPES.includes(file.mimetype)) cb(null, true);
+    else cb(new Error('Only image files (JPEG, PNG, WebP, HEIC) are allowed'));
+  },
+});
+
 module.exports = upload;
 module.exports.s3Client = s3;
+module.exports.receiptUpload = receiptUpload;
