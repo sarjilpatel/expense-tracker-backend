@@ -69,12 +69,18 @@ app.use(cors({
 app.use(express.json());
 app.set('trust proxy', 1);
 
-// Global rate limiter — 60 requests/minute per IP across all /api routes
+// Global rate limiter on /api — 300 requests/minute **per user**, per IP only when there is no
+// usable token (W3-01). It was 60/min per IP, and a household group on one router shares an IP:
+// three phones on the same Wi-Fi shared one budget, and a tour of the four tabs is ~15 requests.
+// The token is verified here with the same secret the auth middleware uses, so a forged one
+// cannot buy its own bucket — it falls back to the IP like any anonymous request.
+const { rateLimitKey } = require("./utils/rateLimitKey");
 const apiLimiter = rateLimit({
     windowMs: 60 * 1000,
-    max: 60,
+    max: 300,
     standardHeaders: true,
     legacyHeaders: false,
+    keyGenerator: rateLimitKey,
     message: { message: "Too many requests, please slow down." },
 });
 app.use('/api', apiLimiter);
