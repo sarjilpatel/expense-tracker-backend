@@ -120,7 +120,8 @@ test('a group occurrence is broadcast to the group room', async () => {
 
   assert.equal(emitted.length, 1);
   assert.equal(emitted[0].room, 'g1');
-  assert.equal(emitted[0].ev, 'new_transaction');
+  assert.equal(emitted[0].ev, 'group_changed', 'a signal to pull, not the row itself (W3-22)');
+  assert.equal(emitted[0].payload.by, 'server');
 });
 
 test('a malformed template does not stop the ones after it', async () => {

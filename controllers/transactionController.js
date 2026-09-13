@@ -71,13 +71,10 @@ exports.addTransaction = async (req, res) => {
       accountId: ownedAccountId,
     });
 
+    // A signal, not the row (W3-22): the group's devices pull the changes feed.
     if (user.groupId) {
       const io = req.app.get("io");
-      if (io) {
-        const populatedTx = await Transaction.findById(transaction._id).populate("userId", "name profilePhoto");
-        const { note: _omit, isRecurring, recurrenceFrequency, nextDueDate, ...socketPayload } = populatedTx.toObject();
-        io.to(user.groupId.toString()).emit("new_transaction", socketPayload);
-      }
+      if (io) io.to(user.groupId.toString()).emit("group_changed", { groupId: user.groupId.toString(), by: String(userId) });
     }
 
     res.status(201).json(transaction);
@@ -431,10 +428,7 @@ exports.updateTransaction = async (req, res) => {
 
     if (user.groupId && transaction.groupId?.toString() === user.groupId.toString()) {
       const io = req.app.get("io");
-      if (io) {
-        const { note: _omit, isRecurring, recurrenceFrequency, nextDueDate, ...socketPayload } = updated.toObject();
-        io.to(user.groupId.toString()).emit("transaction_updated", socketPayload);
-      }
+      if (io) io.to(user.groupId.toString()).emit("group_changed", { groupId: user.groupId.toString(), by: String(userId) });
     }
 
     res.json(updated);
@@ -575,7 +569,7 @@ exports.deleteTransaction = async (req, res) => {
 
     if (isGroupMember) {
       const io = req.app.get("io");
-      if (io) io.to(user.groupId.toString()).emit("transaction_deleted", req.params.id);
+      if (io) io.to(user.groupId.toString()).emit("group_changed", { groupId: user.groupId.toString(), by: String(user._id) });
     }
 
     res.json({ msg: "Transaction removed" });

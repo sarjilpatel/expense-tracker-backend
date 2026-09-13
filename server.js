@@ -233,9 +233,10 @@ cron.schedule("0 * * * *", async () => {
             tx.nextDueDate = nextDue;
             await tx.save();
 
-            // Notify group via socket. Solo users have no groupId — calling .toString() on null
-            // threw and aborted the whole run, skipping every remaining due transaction.
-            if (tx.groupId) io.to(tx.groupId.toString()).emit("new_transaction", newTx);
+            // Tell the group's devices there is something to pull (W3-22). A signal, not the row:
+            // the changes feed is the one source of rows. Solo users have no groupId — calling
+            // .toString() on null threw and aborted the whole run, skipping every remaining one.
+            if (tx.groupId) io.to(tx.groupId.toString()).emit("group_changed", { groupId: tx.groupId.toString(), by: "server" });
           } catch {
             // Skip this template; the rest of the batch still runs.
           }
