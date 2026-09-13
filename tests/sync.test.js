@@ -167,9 +167,11 @@ function harness({ activeGroup = HOME } = {}) {
     r.json = (b) => { r.body = b; return r; };
     return r;
   };
-  const push    = async (items, user = ME) => { const r = res(); await ctrl.push({ user: { id: user }, body: { items } }, r); return r; };
+  const emitted = [];
+  const app = { get: (k) => (k === 'io' ? { to: (room) => ({ emit: (ev, payload) => emitted.push({ room, ev, payload }) }) } : undefined) };
+  const push    = async (items, user = ME) => { const r = res(); await ctrl.push({ user: { id: user }, body: { items }, app }, r); return r; };
   const changes = async (query = {}, user = ME) => { const r = res(); await ctrl.changes({ user: { id: user }, query }, r); return r; };
-  return { models, groups, push, changes, seedCategory: (g, c) => { g.categories.push(c); } };
+  return { models, groups, push, changes, emitted, seedCategory: (g, c) => { g.categories.push(c); } };
 }
 
 const at = (iso) => iso;
@@ -355,4 +357,18 @@ test('a device-made trip links its self member and unattributed settlements to t
   assert.equal(trip.members[0].isSelf, undefined, 'the marker does not reach the schema');
   assert.equal(trip.members[1].userId, null);
   assert.equal(String(trip.settlements[0].recordedBy), ME);
+});
+
+test('a push signals the groups it touched, never for accounts or budgets, and the feed names the shared groups', async () => {
+  const h = harness();
+  await h.push([
+    tx('t1', at('2026-09-13T11:00:00Z')),
+    { collection: 'accounts', op: 'upsert', clientId: 'a1', updatedAt: at('2026-09-13T11:00:00Z'), payload: { name: 'Cash' } },
+  ]);
+  assert.deepEqual(h.emitted.map((e) => [e.room, e.ev]), [[HOME, 'group_changed']]);
+  assert.equal(h.emitted[0].payload.by, ME);
+
+  h.groups[1].isPersonal = true;
+  const feed = await h.changes({});
+  assert.deepEqual(feed.body.groups.map((g) => [g.id, g.isPersonal]), [[HOME, false], [MINE, true]]);
 });

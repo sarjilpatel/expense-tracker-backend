@@ -216,6 +216,19 @@ exports.push = async (req, res) => {
     }
   }
 
+  // Tell the other devices in every group this batch touched that there is something to pull
+  // (W3-22). A signal, not a payload: the feed is the one source of rows, and the pusher's own
+  // device ignores the echo — its rows are already local.
+  const io = req.app && req.app.get && req.app.get('io');
+  if (io) {
+    const touched = new Set();
+    for (const item of items) {
+      if (item.collection === 'accounts' || item.collection === 'budgets') continue;   // never shared
+      touched.add(item.collection === 'categories' ? resolveGroupId(item, scope) : (item.groupId && scope.groupIds.includes(item.groupId) ? item.groupId : scope.activeGroupId));
+    }
+    for (const groupId of touched) if (groupId) io.to(String(groupId)).emit('group_changed', { groupId: String(groupId), by: String(scope.user._id) });
+  }
+
   // Sorting the batch is a server concern; the device matches results by clientId, not position.
   res.json({ results, serverTime: new Date().toISOString() });
 };
@@ -277,6 +290,9 @@ exports.changes = async (req, res) => {
   const page = cutPage(rows, limit);
   res.json({
     ...page,
+    // Which of the caller's groups are shared: a device pushes instantly for those whatever its
+    // schedule says (W3-23), because a family ledger four hours stale is nobody's backup setting.
+    groups: scope.groups.map((g) => ({ id: String(g._id), isPersonal: !!g.isPersonal, name: g.name })),
     hasMore: page.hasMore || truncated,
     cursor: page.cursor || (since ? since.toISOString() : null),
     serverTime: new Date().toISOString(),
