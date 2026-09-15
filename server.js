@@ -147,7 +147,7 @@ io.on("connection", (socket) => {
 });
 
 app.get("/", (req, res) => {
-    res.send("Expense Tracker API with Socket.IO running");
+    res.send("WatchMyWallet API with Socket.IO running");
 });
 
 // Must stay last: `notFound` catches anything the routers did not match, and `errorHandler` is
